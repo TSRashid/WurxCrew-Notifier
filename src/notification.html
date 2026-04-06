@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: transparent; overflow: hidden; }
+
+    .card {
+      margin: 8px; background: #0f172a; border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      overflow: hidden;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(100px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    .cat-bar { height: 3px; }
+    .cat-task       .cat-bar { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+    .cat-change     .cat-bar { background: linear-gradient(90deg, #8b5cf6, #a78bfa); }
+    .cat-knowledge  .cat-bar { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .cat-campaign   .cat-bar { background: linear-gradient(90deg, #ef4444, #f87171); }
+    .cat-incentive  .cat-bar { background: linear-gradient(90deg, #10b981, #34d399); }
+    .cat-default    .cat-bar { background: linear-gradient(90deg, #6366f1, #818cf8); }
+
+    .body { padding: 12px 14px 10px; }
+    .header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+    .icon {
+      width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center; font-size: 15px;
+    }
+    .cat-task       .icon { background: rgba(59,130,246,0.15); color: #60a5fa; }
+    .cat-change     .icon { background: rgba(139,92,246,0.15); color: #a78bfa; }
+    .cat-knowledge  .icon { background: rgba(245,158,11,0.15); color: #fbbf24; }
+    .cat-campaign   .icon { background: rgba(239,68,68,0.15);  color: #f87171; }
+    .cat-incentive  .icon { background: rgba(16,185,129,0.15); color: #34d399; }
+    .cat-default    .icon { background: rgba(99,102,241,0.15); color: #818cf8; }
+
+    .text { flex: 1; min-width: 0; }
+    .title {
+      font-size: 13px; font-weight: 700; color: #f1f5f9; line-height: 1.3;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .meta { font-size: 10px; color: #64748b; margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+    .sender { color: #94a3b8; font-weight: 500; }
+    .msg {
+      font-size: 12px; color: #94a3b8; line-height: 1.4;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .snoozed-badge {
+      display: none; padding: 2px 8px; border-radius: 6px;
+      background: rgba(245,158,11,0.15); color: #fbbf24;
+      font-size: 10px; font-weight: 600;
+    }
+    .actions { display: flex; gap: 6px; }
+    .btn {
+      flex: 1; padding: 7px 0; border-radius: 8px; border: none;
+      font-size: 11px; font-weight: 600; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 4px;
+      transition: all 0.15s;
+    }
+    .btn-read { background: rgba(16,185,129,0.12); color: #34d399; }
+    .btn-read:hover { background: rgba(16,185,129,0.25); }
+    .btn-snooze { background: rgba(245,158,11,0.12); color: #fbbf24; }
+    .btn-snooze:hover { background: rgba(245,158,11,0.25); }
+    .btn-open { background: rgba(99,102,241,0.12); color: #818cf8; }
+    .btn-open:hover { background: rgba(99,102,241,0.25); }
+    .btn-dismiss {
+      width: 30px; flex: none; padding: 7px 0; border-radius: 8px; border: none;
+      background: rgba(255,255,255,0.05); color: #475569;
+      font-size: 13px; cursor: pointer; display: flex;
+      align-items: center; justify-content: center; transition: all 0.15s;
+    }
+    .btn-dismiss:hover { background: rgba(239,68,68,0.15); color: #f87171; }
+    .snooze-menu {
+      display: none; position: absolute; bottom: 38px; left: 0; right: 0;
+      background: #1e293b; border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px; padding: 4px; z-index: 10;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+    }
+    .snooze-menu.show { display: block; }
+    .snooze-opt {
+      padding: 7px 12px; border-radius: 6px; font-size: 11px;
+      color: #e2e8f0; cursor: pointer; transition: background 0.1s;
+    }
+    .snooze-opt:hover { background: rgba(245,158,11,0.15); }
+  </style>
+</head>
+<body>
+  <div class="card cat-default" id="card">
+    <div class="cat-bar"></div>
+    <div class="body">
+      <div class="header">
+        <div class="icon"><span id="iconSym"></span></div>
+        <div class="text">
+          <div class="title" id="title"></div>
+          <div class="meta">
+            <span class="sender" id="sender"></span>
+            <span id="time"></span>
+            <span class="snoozed-badge" id="snoozedBadge">Snoozed</span>
+          </div>
+        </div>
+      </div>
+      <div class="msg" id="msg"></div>
+      <div class="actions">
+        <button class="btn btn-read" id="btnRead">&#10003; Read</button>
+        <div style="position:relative;flex:1;display:flex">
+          <button class="btn btn-snooze" style="width:100%" id="btnSnooze">&#9200; Snooze</button>
+          <div class="snooze-menu" id="snoozeMenu">
+            <div class="snooze-opt" data-min="5">5 minutes</div>
+            <div class="snooze-opt" data-min="15">15 minutes</div>
+            <div class="snooze-opt" data-min="30">30 minutes</div>
+            <div class="snooze-opt" data-min="60">1 hour</div>
+          </div>
+        </div>
+        <button class="btn btn-open" id="btnOpen">&#8599; Open</button>
+        <button class="btn-dismiss" id="btnDismiss">&#10005;</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    firebase.initializeApp({
+      apiKey: "AIzaSyDKARfT8Gzqr5sW7B_3Kl_pg2dasWScb7I",
+      authDomain: "typecraft-e2qz7.firebaseapp.com",
+      projectId: "typecraft-e2qz7",
+    });
+    var db = firebase.firestore();
+
+    var CAT_ICONS = { task: '📋', change_management: '🔄', knowledge_base: '📚', campaign: '📢', incentive: '💰', reminder: '⏰', resource: '📁' };
+    var CAT_CLASSES = { task: 'cat-task', change_management: 'cat-change', knowledge_base: 'cat-knowledge', campaign: 'cat-campaign', incentive: 'cat-incentive' };
+
+    var notifData = null;
+
+    window.agent.onNotification(function(data) {
+      notifData = data;
+      document.getElementById('card').className = 'card ' + (CAT_CLASSES[data.category] || 'cat-default');
+      document.getElementById('iconSym').textContent = CAT_ICONS[data.category] || '🔔';
+      document.getElementById('title').textContent = data.title;
+      document.getElementById('msg').textContent = data.body;
+      document.getElementById('sender').textContent = data.senderName || '';
+      var t = new Date(data.createdAt || Date.now());
+      document.getElementById('time').textContent = t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      if (data.snoozed) document.getElementById('snoozedBadge').style.display = 'inline';
+    });
+
+    document.getElementById('btnRead').addEventListener('click', function() {
+      if (!notifData) return;
+      window.agent.markRead(notifData.id);
+      window.agent.closeNotification(notifData.id);
+    });
+
+    document.getElementById('btnSnooze').addEventListener('click', function() {
+      document.getElementById('snoozeMenu').classList.toggle('show');
+    });
+
+    document.querySelectorAll('.snooze-opt').forEach(function(el) {
+      el.addEventListener('click', function() {
+        if (!notifData) return;
+        var minutes = parseInt(this.getAttribute('data-min'));
+        // Close this popup — main window handles the timer
+        window.agent.snooze(notifData.id, minutes);
+      });
+    });
+
+    document.getElementById('btnOpen').addEventListener('click', function() {
+      if (!notifData) return;
+      window.agent.openWeb(notifData.id);
+    });
+
+    document.getElementById('btnDismiss').addEventListener('click', function() {
+      if (!notifData) return;
+      window.agent.closeNotification(notifData.id);
+    });
+
+    document.addEventListener('click', function(e) {
+      if (!e.target.closest('.btn-snooze') && !e.target.closest('.snooze-menu')) {
+        document.getElementById('snoozeMenu').classList.remove('show');
+      }
+    });
+  </script>
+</body>
+</html>

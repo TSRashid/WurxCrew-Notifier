@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WurxCrew Notifier</title>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      height: 100vh; display: flex; flex-direction: column;
+      overflow: hidden; user-select: none;
+    }
+    .titlebar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px 0; -webkit-app-region: drag;
+    }
+    .titlebar h1 { font-size: 13px; font-weight: 600; color: #94a3b8; }
+    .close-btn {
+      -webkit-app-region: no-drag;
+      width: 28px; height: 28px; border-radius: 50%;
+      border: none; background: rgba(255,255,255,0.08);
+      color: #94a3b8; font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s;
+    }
+    .close-btn:hover { background: #ef4444; color: #fff; }
+
+    #loginView {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 24px 32px;
+    }
+    .logo {
+      width: 56px; height: 56px; border-radius: 16px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px; font-weight: 800; color: #fff; margin-bottom: 16px;
+    }
+    h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; color: #f1f5f9; }
+    .subtitle { font-size: 12px; color: #64748b; margin-bottom: 24px; }
+    .field { width: 100%; margin-bottom: 12px; }
+    .field label { font-size: 11px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
+    .field input {
+      width: 100%; padding: 10px 14px; border-radius: 10px;
+      border: 2px solid #1e293b; background: #1e293b; color: #f1f5f9;
+      font-size: 14px; outline: none; transition: border-color 0.2s;
+    }
+    .field input:focus { border-color: #3b82f6; }
+    .field input::placeholder { color: #475569; }
+    .btn-login {
+      width: 100%; padding: 11px; border-radius: 10px; border: none;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      color: #fff; font-size: 14px; font-weight: 600;
+      cursor: pointer; margin-top: 8px; transition: opacity 0.2s;
+    }
+    .btn-login:hover { opacity: 0.9; }
+    .btn-login:disabled { opacity: 0.5; cursor: not-allowed; }
+    .error { color: #ef4444; font-size: 12px; margin-top: 10px; text-align: center; min-height: 18px; }
+
+    #connectedView {
+      display: none; flex: 1; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 24px 32px; text-align: center;
+    }
+    .status-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #22c55e; margin-bottom: 12px;
+      box-shadow: 0 0 12px rgba(34,197,94,0.5);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 12px rgba(34,197,94,0.5); }
+      50% { box-shadow: 0 0 20px rgba(34,197,94,0.8); }
+    }
+    .connected-text { font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; }
+    .connected-email { font-size: 12px; color: #64748b; margin-bottom: 4px; }
+    .connected-count { font-size: 12px; color: #94a3b8; margin-bottom: 24px; }
+    .btn-action {
+      width: 100%; padding: 10px; border-radius: 10px; border: none;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      margin-bottom: 8px; transition: all 0.15s;
+    }
+    .btn-open-web { background: rgba(99,102,241,0.15); color: #818cf8; }
+    .btn-open-web:hover { background: rgba(99,102,241,0.25); }
+    .btn-logout { background: rgba(239,68,68,0.1); color: #f87171; }
+    .btn-logout:hover { background: rgba(239,68,68,0.2); }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <h1>WurxCrew Notifier</h1>
+    <button class="close-btn" onclick="window.agent.hideWindow()">&#10005;</button>
+  </div>
+
+  <div id="loginView">
+    <div class="logo">W</div>
+    <h2>Welcome Back</h2>
+    <p class="subtitle">Sign in to receive notifications</p>
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="email" placeholder="you@example.com" autofocus>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="password" placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;">
+    </div>
+    <button class="btn-login" id="loginBtn">Sign In</button>
+    <div class="error" id="error"></div>
+  </div>
+
+  <div id="connectedView">
+    <div class="status-dot"></div>
+    <div class="connected-text">Connected &amp; Listening</div>
+    <div class="connected-email" id="userEmail"></div>
+    <div class="connected-count" id="unreadCount">0 unread notifications</div>
+    <button class="btn-action btn-open-web" onclick="window.agent.openWebApp()">Open WurxCrew Web App</button>
+    <button class="btn-action btn-logout" id="logoutBtn">Sign Out</button>
+  </div>
+
+  <script>
+    firebase.initializeApp({
+      apiKey: "AIzaSyDKARfT8Gzqr5sW7B_3Kl_pg2dasWScb7I",
+      authDomain: "typecraft-e2qz7.firebaseapp.com",
+      projectId: "typecraft-e2qz7",
+      storageBucket: "typecraft-e2qz7.firebasestorage.app",
+      messagingSenderId: "418684410971",
+      appId: "1:418684410971:web:b9410a1355a63d50ccb37e"
+    });
+
+    var auth = firebase.auth();
+    var db = firebase.firestore();
+    var unsubFirestore = null;
+    var seenIds = new Set();
+    var snoozedTimers = {};
+
+    // Login
+    document.getElementById('loginBtn').addEventListener('click', handleLogin);
+    document.getElementById('password').addEventListener('keydown', function(e) { if (e.key === 'Enter') handleLogin(); });
+    document.getElementById('email').addEventListener('keydown', function(e) { if (e.key === 'Enter') document.getElementById('password').focus(); });
+    document.getElementById('logoutBtn').addEventListener('click', function() { auth.signOut(); });
+
+    async function handleLogin() {
+      var email = document.getElementById('email').value.trim();
+      var pw = document.getElementById('password').value;
+      var btn = document.getElementById('loginBtn');
+      var err = document.getElementById('error');
+      if (!email || !pw) { err.textContent = 'Enter email and password.'; return; }
+      btn.disabled = true; btn.textContent = 'Signing in...'; err.textContent = '';
+      try {
+        await auth.signInWithEmailAndPassword(email, pw);
+      } catch (e) {
+        err.textContent = e.message;
+        btn.disabled = false; btn.textContent = 'Sign In';
+      }
+    }
+
+    // Auth state
+    auth.onAuthStateChanged(function(user) {
+      if (user) {
+        document.getElementById('loginView').style.display = 'none';
+        document.getElementById('connectedView').style.display = 'flex';
+        document.getElementById('userEmail').textContent = user.email;
+        window.agent.authStateChanged(true);
+        startListening(user.uid);
+      } else {
+        document.getElementById('loginView').style.display = 'flex';
+        document.getElementById('connectedView').style.display = 'none';
+        document.getElementById('loginBtn').disabled = false;
+        document.getElementById('loginBtn').textContent = 'Sign In';
+        window.agent.authStateChanged(false);
+        stopListening();
+      }
+    });
+
+    function startListening(uid) {
+      stopListening();
+      seenIds = new Set();
+      var initialized = false;
+
+      unsubFirestore = db.collection('notifications')
+        .where('recipientId', '==', uid)
+        .where('read', '==', false)
+        .onSnapshot(function(snap) {
+          var count = snap.size;
+          document.getElementById('unreadCount').textContent = count + ' unread notification' + (count !== 1 ? 's' : '');
+          window.agent.updateTooltip(count);
+
+          if (!initialized) {
+            snap.docs.forEach(function(d) { seenIds.add(d.id); });
+            initialized = true;
+            return;
+          }
+
+          snap.docChanges().forEach(function(change) {
+            if (change.type === 'added' && !seenIds.has(change.doc.id)) {
+              seenIds.add(change.doc.id);
+              var data = change.doc.data();
+              window.agent.showNotification({
+                id: change.doc.id,
+                title: data.title || 'New Notification',
+                body: data.body || '',
+                category: data.category || 'task',
+                senderName: data.senderName || '',
+                createdAt: data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().getTime() : Date.now(),
+              });
+            }
+          });
+        });
+    }
+
+    function stopListening() {
+      if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
+      Object.values(snoozedTimers).forEach(function(t) { clearTimeout(t); });
+      snoozedTimers = {};
+    }
+
+    // Listen for mark-read requests from notification windows (routed via main process)
+    window.agent.onMarkRead(function(notifId) {
+      db.collection('notifications').doc(notifId).update({ read: true }).catch(function(err) {
+        console.error('Failed to mark read:', err);
+      });
+    });
+
+    // Listen for snooze requests relayed from notification windows via main process
+    window.agent.onSnoozeRequest(function(data) {
+      var notifId = data.notifId;
+      var minutes = data.minutes;
+      if (snoozedTimers[notifId]) clearTimeout(snoozedTimers[notifId]);
+      snoozedTimers[notifId] = setTimeout(async function() {
+        delete snoozedTimers[notifId];
+        try {
+          var snap = await db.collection('notifications').doc(notifId).get();
+          if (snap.exists && !snap.data().read) {
+            var d = snap.data();
+            window.agent.showNotification({
+              id: snap.id, title: d.title || 'Snoozed', body: d.body || '',
+              category: d.category || 'task', senderName: d.senderName || '',
+              createdAt: d.createdAt && d.createdAt.toDate ? d.createdAt.toDate().getTime() : Date.now(),
+              snoozed: true,
+            });
+          }
+        } catch(err) {}
+      }, minutes * 60 * 1000);
+    });
+  </script>
+</body>
+</html>

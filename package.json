@@ -1,0 +1,47 @@
+{
+  "name": "wurxcrew-notifier",
+  "version": "1.0.0",
+  "description": "WurxCrew Notification Agent — system tray app for push notifications",
+  "main": "src/main.js",
+  "private": true,
+
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac"
+  },
+
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8"
+  },
+
+  "build": {
+    "extends": null,
+    "appId": "com.wurxcrew.notifier",
+    "productName": "WurxCrew Notifier",
+    "copyright": "Copyright 2025 WurxCrew",
+    "directories": { "output": "dist" },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.utilities",
+      "identity": null
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
+  }
+}
