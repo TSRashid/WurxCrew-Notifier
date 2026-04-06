@@ -12,7 +12,7 @@ const NOTIF_WIDTH = 390;
 const NOTIF_HEIGHT = 190;
 const NOTIF_GAP = 8;
 const MAX_VISIBLE = 4;
-const WEB_APP_URL = 'https://typecraft-e2qz7.web.app';
+const WEB_APP_URL = 'https://wurxos.web.app';
 
 // ── Single instance lock ────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -84,8 +84,11 @@ ipcMain.handle('open-web-app', () => { shell.openExternal(WEB_APP_URL); });
 ipcMain.handle('update-tooltip', (_, count) => { if (tray) tray.setToolTip(`WurxCrew Notifier — ${count} unread`); });
 
 function playNotificationSound() {
-  // Use Windows system notification sound via PowerShell
-  exec('powershell -c "(New-Object Media.SoundPlayer \'C:\\Windows\\Media\\Windows Notify Email.wav\').PlaySync()"', { windowsHide: true });
+  if (process.platform === 'win32') {
+    exec('powershell -c "(New-Object Media.SoundPlayer \'C:\\Windows\\Media\\Windows Notify Email.wav\').PlaySync()"', { windowsHide: true });
+  } else if (process.platform === 'darwin') {
+    exec('afplay /System/Library/Sounds/Glass.aiff');
+  }
 }
 
 ipcMain.handle('show-notification', (_, notif) => {
