@@ -34,7 +34,7 @@ function createTray() {
   const iconPath = path.join(__dirname, '..', 'assets', 'tray-icon.png');
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
   tray = new Tray(icon);
-  tray.setToolTip('WurxCrew Notifier');
+  tray.setToolTip('WurxOS Notifier');
   tray.on('click', () => {
     if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
   });
@@ -44,7 +44,7 @@ function createTray() {
 function updateTrayMenu(loggedIn) {
   const template = loggedIn
     ? [
-        { label: 'Open WurxCrew Web', click: () => shell.openExternal(WEB_APP_URL) },
+        { label: 'Open WurxOS', click: () => shell.openExternal(WEB_APP_URL) },
         { type: 'separator' },
         { label: 'Show Window', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } } },
         { label: 'Quit', click: () => { app.exit(0); } },
@@ -81,7 +81,7 @@ ipcMain.handle('auth-state-changed', (_, loggedIn) => {
 
 ipcMain.handle('hide-window', () => { if (mainWindow) mainWindow.hide(); });
 ipcMain.handle('open-web-app', () => { shell.openExternal(WEB_APP_URL); });
-ipcMain.handle('update-tooltip', (_, count) => { if (tray) tray.setToolTip(`WurxCrew Notifier — ${count} unread`); });
+ipcMain.handle('update-tooltip', (_, count) => { if (tray) tray.setToolTip(`WurxOS Notifier — ${count} unread`); });
 
 function playNotificationSound() {
   if (process.platform === 'win32') {

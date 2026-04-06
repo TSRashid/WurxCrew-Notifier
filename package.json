@@ -1,7 +1,7 @@
 {
-  "name": "wurxcrew-notifier",
+  "name": "wurxos-notifier",
   "version": "1.0.0",
-  "description": "WurxCrew Notification Agent — system tray app for push notifications",
+  "description": "WurxOS Notification Agent — system tray app for push notifications",
   "main": "src/main.js",
   "private": true,
 
@@ -19,9 +19,9 @@
 
   "build": {
     "extends": null,
-    "appId": "com.wurxcrew.notifier",
-    "productName": "WurxCrew Notifier",
-    "copyright": "Copyright 2025 WurxCrew",
+    "appId": "com.wurxos.notifier",
+    "productName": "WurxOS Notifier",
+    "copyright": "Copyright 2025 WurxOS",
     "directories": { "output": "dist" },
     "files": [
       "src/**/*",
