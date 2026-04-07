@@ -240,38 +240,32 @@
       L('startSettingsSync: ' + uid);
       if (unsubSettings) unsubSettings();
 
-      // Listen to users doc first
-      unsubSettings = db.collection('users').doc(uid).onSnapshot(function(snap) {
-        if (snap.exists) {
+      // Determine which collection this user is in, then listen to it
+      db.collection('users').doc(uid).get().then(function(userSnap) {
+        var collName = userSnap.exists ? 'users' : 'teamUsers';
+        L('User found in: ' + collName);
+
+        // Real-time listener on the correct collection
+        unsubSettings = db.collection(collName).doc(uid).onSnapshot(function(snap) {
+          if (!snap.exists) { L('Settings doc missing in ' + collName); return; }
           var data = snap.data();
-          currentRole = data.role || null;
+          currentRole = data.role || (collName === 'teamUsers' ? 'apc' : null);
           userSettings = {
             resetSchedule: data.resetSchedule || null,
             tierNotifications: data.tierNotifications || null,
             campaignReminder: data.campaignReminder || null,
           };
-          L('Settings synced (users): role=' + currentRole + ' reset=' + JSON.stringify(userSettings.resetSchedule));
+          L('Settings synced (' + collName + '): role=' + currentRole);
+          L('  tierNotifications: ' + JSON.stringify(userSettings.tierNotifications));
+          L('  campaignReminder: ' + JSON.stringify(userSettings.campaignReminder));
+          L('  resetSchedule: ' + JSON.stringify(userSettings.resetSchedule));
           lastFiredKeys.clear(); // allow re-fire on settings change
           setStatus('synced — ' + currentRole);
-        } else {
-          // Try teamUsers (APC/IPC)
-          db.collection('teamUsers').doc(uid).get().then(function(tSnap) {
-            if (tSnap.exists) {
-              var data = tSnap.data();
-              currentRole = data.role || 'apc';
-              userSettings = {
-                resetSchedule: data.resetSchedule || null,
-                tierNotifications: data.tierNotifications || null,
-                campaignReminder: data.campaignReminder || null,
-              };
-              L('Settings synced (teamUsers): role=' + currentRole);
-              lastFiredKeys.clear();
-              setStatus('synced — ' + currentRole);
-            }
-          });
-        }
-      }, function(err) {
-        L('Settings sync ERROR: ' + err.message);
+        }, function(err) {
+          L('Settings sync ERROR: ' + err.message);
+        });
+      }).catch(function(err) {
+        L('Failed to determine user collection: ' + err.message);
       });
     }
 
@@ -377,8 +371,9 @@
     // ══════════════════════════════════════════════════════════════════════
     async function checkTierNotifications(uid, now) {
       var tn = userSettings.tierNotifications;
-      if (!tn || !tn.enabled) return;
-      if (!['boss', 'ol', 'tl', 'apc'].includes(currentRole)) return;
+      L('[Tier] checking... enabled=' + (tn ? tn.enabled : 'no settings'));
+      if (!tn || !tn.enabled) { L('[Tier] skipped — not enabled'); return; }
+      if (!['boss', 'ol', 'tl', 'apc'].includes(currentRole)) { L('[Tier] skipped — role=' + currentRole); return; }
 
       var today = now.getDate();
       var month = now.getMonth();
@@ -390,18 +385,21 @@
         { idx: 2, day: Number(tn.day2), time: tn.time2 || '18:00' },
       ];
 
+      L('[Tier] today=' + today + ' slots: day1=' + slots[0].day + '@' + slots[0].time + ' day2=' + slots[1].day + '@' + slots[1].time);
+
       for (var i = 0; i < slots.length; i++) {
         var s = slots[i];
-        if (!s.day || s.day < 1 || s.day > 31) continue;
+        if (!s.day || s.day < 1 || s.day > 31) { L('[Tier] slot' + s.idx + ' invalid day=' + s.day); continue; }
         var effDay = Math.min(s.day, lastDay);
-        if (today !== effDay) continue;
+        if (today !== effDay) { L('[Tier] slot' + s.idx + ' skipped — today(' + today + ') != effDay(' + effDay + ')'); continue; }
 
         var parts = s.time.split(':');
         var target = new Date(year, month, effDay, parseInt(parts[0]) || 0, parseInt(parts[1]) || 0, 0, 0);
-        if (now < target) continue;
+        L('[Tier] slot' + s.idx + ' target=' + target.toLocaleTimeString() + ' now=' + now.toLocaleTimeString() + ' passed=' + (now >= target));
+        if (now < target) { L('[Tier] slot' + s.idx + ' not time yet'); continue; }
 
         var firedKey = 'tier-' + year + '-' + (month+1) + '-' + today + '-' + s.idx + '-' + s.time;
-        if (lastFiredKeys.has(firedKey)) continue;
+        if (lastFiredKeys.has(firedKey)) { L('[Tier] slot' + s.idx + ' already fired this session'); continue; }
 
         // Load matching brands
         var brands = await loadTierBrands(uid);
@@ -439,6 +437,7 @@
     // ══════════════════════════════════════════════════════════════════════
     async function checkCampaignReminders(uid, now) {
       var cr = userSettings.campaignReminder || { leadDays: 2, time: '09:00', bossScope: 'mine' };
+      L('[Campaign] checking... leadDays=' + cr.leadDays + ' time=' + cr.time + ' role=' + currentRole);
       var leadDays = cr.leadDays != null ? cr.leadDays : 2;
       var parts = (cr.time || '09:00').split(':');
       var rH = parseInt(parts[0]) || 0;
