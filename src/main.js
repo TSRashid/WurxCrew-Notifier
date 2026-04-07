@@ -1,6 +1,20 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { exec } = require('child_process');
+
+// ── File Logger ────────────────────────────────────────────────────────────
+const LOG_FILE = path.join(app.getPath('desktop'), 'wurxos-debug.log');
+function log(msg) {
+  const line = `[${new Date().toISOString()}] [main] ${msg}\n`;
+  try { fs.appendFileSync(LOG_FILE, line); } catch {}
+  console.log(msg);
+}
+log('=== App starting ===');
+log(`Platform: ${process.platform}, Arch: ${process.arch}, Electron: ${process.versions.electron}`);
+
+process.on('uncaughtException', (err) => { log(`UNCAUGHT EXCEPTION: ${err.stack || err.message}`); });
+process.on('unhandledRejection', (reason) => { log(`UNHANDLED REJECTION: ${reason}`); });
 
 // ── State ───────────────────────────────────────────────────────────────────
 let tray = null;
@@ -23,8 +37,16 @@ app.on('second-instance', () => {
 
 // ── App ready ───────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  log('App ready fired');
+  if (process.platform === 'darwin') {
+    log('macOS detected — hiding dock');
+    app.dock?.hide();
+  }
+  log('Creating tray...');
   createTray();
+  log('Tray created. Creating main window...');
   createMainWindow();
+  log('Main window created');
 });
 
 app.on('window-all-closed', (e) => e.preventDefault());
@@ -47,11 +69,11 @@ function updateTrayMenu(loggedIn) {
         { label: 'Open WurxOS', click: () => shell.openExternal(WEB_APP_URL) },
         { type: 'separator' },
         { label: 'Show Window', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } } },
-        { label: 'Quit', click: () => { app.exit(0); } },
+        { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
       ]
     : [
         { label: 'Login', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } } },
-        { label: 'Quit', click: () => { app.exit(0); } },
+        { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
       ];
   tray.setContextMenu(Menu.buildFromTemplate(template));
 }
@@ -62,6 +84,7 @@ function createMainWindow() {
     width: 380, height: 460,
     resizable: false, maximizable: false, minimizable: true,
     frame: false, show: true,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false,
@@ -70,16 +93,30 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'main.html'));
-  mainWindow.on('close', (e) => { e.preventDefault(); mainWindow.hide(); });
+  mainWindow.on('close', (e) => {
+    if (!app.isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
+    }
+  });
 }
 
 // ── IPC Handlers ────────────────────────────────────────────────────────────
 ipcMain.handle('auth-state-changed', (_, loggedIn) => {
+  log(`auth-state-changed: loggedIn=${loggedIn}`);
   updateTrayMenu(loggedIn);
-  if (loggedIn && mainWindow) mainWindow.hide();
+  if (loggedIn && mainWindow) {
+    log('User logged in — will hide window in 500ms');
+    setTimeout(() => {
+      log('Hiding main window now');
+      if (mainWindow) mainWindow.hide();
+      log('Main window hidden');
+    }, 500);
+  }
 });
 
-ipcMain.handle('hide-window', () => { if (mainWindow) mainWindow.hide(); });
+ipcMain.handle('hide-window', () => { log('hide-window called'); if (mainWindow) mainWindow.hide(); });
+ipcMain.handle('log-renderer', (_, msg) => { log(`[renderer] ${msg}`); });
 ipcMain.handle('open-web-app', () => { shell.openExternal(WEB_APP_URL); });
 ipcMain.handle('update-tooltip', (_, count) => { if (tray) tray.setToolTip(`WurxOS Notifier — ${count} unread`); });
 

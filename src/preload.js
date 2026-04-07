@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('agent', {
+  log: (msg) => ipcRenderer.invoke('log-renderer', msg),
   authStateChanged: (loggedIn) => ipcRenderer.invoke('auth-state-changed', loggedIn),
   hideWindow: () => ipcRenderer.invoke('hide-window'),
   openWebApp: () => ipcRenderer.invoke('open-web-app'),

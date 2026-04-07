@@ -149,9 +149,13 @@
       var err = document.getElementById('error');
       if (!email || !pw) { err.textContent = 'Enter email and password.'; return; }
       btn.disabled = true; btn.textContent = 'Signing in...'; err.textContent = '';
+      window.agent.log('handleLogin called with email: ' + email);
       try {
+        window.agent.log('Calling signInWithEmailAndPassword...');
         await auth.signInWithEmailAndPassword(email, pw);
+        window.agent.log('signInWithEmailAndPassword SUCCESS');
       } catch (e) {
+        window.agent.log('signInWithEmailAndPassword ERROR: ' + e.code + ' — ' + e.message);
         err.textContent = e.message;
         btn.disabled = false; btn.textContent = 'Sign In';
       }
@@ -159,13 +163,19 @@
 
     // Auth state
     auth.onAuthStateChanged(function(user) {
+      window.agent.log('onAuthStateChanged fired — user: ' + (user ? user.email : 'null'));
       if (user) {
+        window.agent.log('User logged in: ' + user.uid + ' / ' + user.email);
         document.getElementById('loginView').style.display = 'none';
         document.getElementById('connectedView').style.display = 'flex';
         document.getElementById('userEmail').textContent = user.email;
+        window.agent.log('Calling authStateChanged(true)...');
         window.agent.authStateChanged(true);
+        window.agent.log('Calling startListening...');
         startListening(user.uid);
+        window.agent.log('startListening called OK');
       } else {
+        window.agent.log('No user — showing login view');
         document.getElementById('loginView').style.display = 'flex';
         document.getElementById('connectedView').style.display = 'none';
         document.getElementById('loginBtn').disabled = false;
@@ -176,10 +186,12 @@
     });
 
     function startListening(uid) {
+      window.agent.log('startListening() for uid: ' + uid);
       stopListening();
       seenIds = new Set();
       var initialized = false;
 
+      window.agent.log('Setting up Firestore onSnapshot...');
       unsubFirestore = db.collection('notifications')
         .where('recipientId', '==', uid)
         .where('read', '==', false)
@@ -208,7 +220,10 @@
               });
             }
           });
+        }, function(error) {
+          window.agent.log('Firestore onSnapshot ERROR: ' + error.code + ' — ' + error.message);
         });
+      window.agent.log('Firestore onSnapshot attached');
     }
 
     function stopListening() {
