@@ -38,8 +38,12 @@ app.on('second-instance', () => {
 // ── App ready ───────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   log('App ready fired');
-  // Keep dock icon visible on macOS so users can find the app
-  log(`macOS: ${process.platform === 'darwin'}`);
+  log(`Platform: ${process.platform}`);
+
+  // Auto-start on login
+  app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
+  log('Auto-start on login: enabled');
+
   log('Creating tray...');
   createTray();
   log('Tray created. Creating main window...');

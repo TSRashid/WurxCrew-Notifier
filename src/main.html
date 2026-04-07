@@ -28,16 +28,15 @@
       transition: all 0.15s;
     }
     .close-btn:hover { background: #ef4444; color: #fff; }
-
     #loginView {
       flex: 1; display: flex; flex-direction: column;
       align-items: center; justify-content: center; padding: 24px 32px;
     }
     .logo {
       width: 56px; height: 56px; border-radius: 16px;
-      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      background: linear-gradient(135deg, #f5d5a8, #d4a574);
       display: flex; align-items: center; justify-content: center;
-      font-size: 24px; font-weight: 800; color: #fff; margin-bottom: 16px;
+      font-size: 24px; font-weight: 800; color: #0a0a0a; margin-bottom: 16px;
     }
     h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; color: #f1f5f9; }
     .subtitle { font-size: 12px; color: #64748b; margin-bottom: 24px; }
@@ -48,18 +47,17 @@
       border: 2px solid #1e293b; background: #1e293b; color: #f1f5f9;
       font-size: 14px; outline: none; transition: border-color 0.2s;
     }
-    .field input:focus { border-color: #3b82f6; }
+    .field input:focus { border-color: #f5d5a8; }
     .field input::placeholder { color: #475569; }
     .btn-login {
       width: 100%; padding: 11px; border-radius: 10px; border: none;
-      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-      color: #fff; font-size: 14px; font-weight: 600;
+      background: linear-gradient(135deg, #f5d5a8, #d4a574);
+      color: #0a0a0a; font-size: 14px; font-weight: 600;
       cursor: pointer; margin-top: 8px; transition: opacity 0.2s;
     }
     .btn-login:hover { opacity: 0.9; }
     .btn-login:disabled { opacity: 0.5; cursor: not-allowed; }
     .error { color: #ef4444; font-size: 12px; margin-top: 10px; text-align: center; min-height: 18px; }
-
     #connectedView {
       display: none; flex: 1; flex-direction: column;
       align-items: center; justify-content: center;
@@ -77,14 +75,15 @@
     }
     .connected-text { font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; }
     .connected-email { font-size: 12px; color: #64748b; margin-bottom: 4px; }
-    .connected-count { font-size: 12px; color: #94a3b8; margin-bottom: 24px; }
+    .connected-count { font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
+    .connected-status { font-size: 10px; color: #475569; margin-bottom: 24px; }
     .btn-action {
       width: 100%; padding: 10px; border-radius: 10px; border: none;
       font-size: 13px; font-weight: 600; cursor: pointer;
       margin-bottom: 8px; transition: all 0.15s;
     }
-    .btn-open-web { background: rgba(99,102,241,0.15); color: #818cf8; }
-    .btn-open-web:hover { background: rgba(99,102,241,0.25); }
+    .btn-open-web { background: rgba(245,213,168,0.15); color: #f5d5a8; }
+    .btn-open-web:hover { background: rgba(245,213,168,0.25); }
     .btn-logout { background: rgba(239,68,68,0.1); color: #f87171; }
     .btn-logout:hover { background: rgba(239,68,68,0.2); }
   </style>
@@ -116,6 +115,7 @@
     <div class="connected-text">Connected &amp; Listening</div>
     <div class="connected-email" id="userEmail"></div>
     <div class="connected-count" id="unreadCount">0 unread notifications</div>
+    <div class="connected-status" id="schedulerStatus">Scheduler: loading settings...</div>
     <button class="btn-action btn-open-web" onclick="window.agent.openWebApp()">Open WurxOS</button>
     <button class="btn-action btn-logout" id="logoutBtn">Sign Out</button>
   </div>
@@ -133,10 +133,22 @@
     var auth = firebase.auth();
     var db = firebase.firestore();
     var unsubFirestore = null;
+    var unsubSettings = null;
+    var schedulerInterval = null;
     var seenIds = new Set();
     var snoozedTimers = {};
+    var currentUid = null;
+    var currentRole = null;
+    var userSettings = {};
+    var lastFiredKeys = new Set(); // prevents duplicate fires within same minute
 
-    // Login
+    function L(msg) { window.agent.log(msg); }
+    function setStatus(msg) {
+      var el = document.getElementById('schedulerStatus');
+      if (el) el.textContent = 'Scheduler: ' + msg;
+    }
+
+    // ── Login ──────────────────────────────────────────────────────────────
     document.getElementById('loginBtn').addEventListener('click', handleLogin);
     document.getElementById('password').addEventListener('keydown', function(e) { if (e.key === 'Enter') handleLogin(); });
     document.getElementById('email').addEventListener('keydown', function(e) { if (e.key === 'Enter') document.getElementById('password').focus(); });
@@ -149,49 +161,49 @@
       var err = document.getElementById('error');
       if (!email || !pw) { err.textContent = 'Enter email and password.'; return; }
       btn.disabled = true; btn.textContent = 'Signing in...'; err.textContent = '';
-      window.agent.log('handleLogin called with email: ' + email);
+      L('handleLogin: ' + email);
       try {
-        window.agent.log('Calling signInWithEmailAndPassword...');
         await auth.signInWithEmailAndPassword(email, pw);
-        window.agent.log('signInWithEmailAndPassword SUCCESS');
+        L('Login SUCCESS');
       } catch (e) {
-        window.agent.log('signInWithEmailAndPassword ERROR: ' + e.code + ' — ' + e.message);
+        L('Login ERROR: ' + e.code + ' — ' + e.message);
         err.textContent = e.message;
         btn.disabled = false; btn.textContent = 'Sign In';
       }
     }
 
-    // Auth state
+    // ── Auth state ─────────────────────────────────────────────────────────
     auth.onAuthStateChanged(function(user) {
-      window.agent.log('onAuthStateChanged fired — user: ' + (user ? user.email : 'null'));
+      L('onAuthStateChanged: ' + (user ? user.email : 'null'));
       if (user) {
-        window.agent.log('User logged in: ' + user.uid + ' / ' + user.email);
+        currentUid = user.uid;
         document.getElementById('loginView').style.display = 'none';
         document.getElementById('connectedView').style.display = 'flex';
         document.getElementById('userEmail').textContent = user.email;
-        window.agent.log('Calling authStateChanged(true)...');
         window.agent.authStateChanged(true);
-        window.agent.log('Calling startListening...');
         startListening(user.uid);
-        window.agent.log('startListening called OK');
+        startSettingsSync(user.uid);
+        startScheduler(user.uid);
       } else {
-        window.agent.log('No user — showing login view');
+        currentUid = null;
+        currentRole = null;
+        userSettings = {};
         document.getElementById('loginView').style.display = 'flex';
         document.getElementById('connectedView').style.display = 'none';
         document.getElementById('loginBtn').disabled = false;
         document.getElementById('loginBtn').textContent = 'Sign In';
         window.agent.authStateChanged(false);
-        stopListening();
+        stopAll();
       }
     });
 
+    // ── Notification listener ──────────────────────────────────────────────
     function startListening(uid) {
-      window.agent.log('startListening() for uid: ' + uid);
-      stopListening();
+      L('startListening: ' + uid);
+      if (unsubFirestore) unsubFirestore();
       seenIds = new Set();
       var initialized = false;
 
-      window.agent.log('Setting up Firestore onSnapshot...');
       unsubFirestore = db.collection('notifications')
         .where('recipientId', '==', uid)
         .where('read', '==', false)
@@ -199,13 +211,11 @@
           var count = snap.size;
           document.getElementById('unreadCount').textContent = count + ' unread notification' + (count !== 1 ? 's' : '');
           window.agent.updateTooltip(count);
-
           if (!initialized) {
             snap.docs.forEach(function(d) { seenIds.add(d.id); });
             initialized = true;
             return;
           }
-
           snap.docChanges().forEach(function(change) {
             if (change.type === 'added' && !seenIds.has(change.doc.id)) {
               seenIds.add(change.doc.id);
@@ -221,25 +231,370 @@
             }
           });
         }, function(error) {
-          window.agent.log('Firestore onSnapshot ERROR: ' + error.code + ' — ' + error.message);
+          L('Notification listener ERROR: ' + error.code + ' — ' + error.message);
         });
-      window.agent.log('Firestore onSnapshot attached');
     }
 
-    function stopListening() {
+    // ── Settings sync (real-time) ──────────────────────────────────────────
+    function startSettingsSync(uid) {
+      L('startSettingsSync: ' + uid);
+      if (unsubSettings) unsubSettings();
+
+      // Listen to users doc first
+      unsubSettings = db.collection('users').doc(uid).onSnapshot(function(snap) {
+        if (snap.exists) {
+          var data = snap.data();
+          currentRole = data.role || null;
+          userSettings = {
+            resetSchedule: data.resetSchedule || null,
+            tierNotifications: data.tierNotifications || null,
+            campaignReminder: data.campaignReminder || null,
+          };
+          L('Settings synced (users): role=' + currentRole + ' reset=' + JSON.stringify(userSettings.resetSchedule));
+          lastFiredKeys.clear(); // allow re-fire on settings change
+          setStatus('synced — ' + currentRole);
+        } else {
+          // Try teamUsers (APC/IPC)
+          db.collection('teamUsers').doc(uid).get().then(function(tSnap) {
+            if (tSnap.exists) {
+              var data = tSnap.data();
+              currentRole = data.role || 'apc';
+              userSettings = {
+                resetSchedule: data.resetSchedule || null,
+                tierNotifications: data.tierNotifications || null,
+                campaignReminder: data.campaignReminder || null,
+              };
+              L('Settings synced (teamUsers): role=' + currentRole);
+              lastFiredKeys.clear();
+              setStatus('synced — ' + currentRole);
+            }
+          });
+        }
+      }, function(err) {
+        L('Settings sync ERROR: ' + err.message);
+      });
+    }
+
+    // ── Scheduler — runs every 60 seconds ─────────────────────────────────
+    function startScheduler(uid) {
+      L('startScheduler');
+      if (schedulerInterval) clearInterval(schedulerInterval);
+      // Run immediately + every 60s
+      schedulerTick(uid);
+      schedulerInterval = setInterval(function() { schedulerTick(uid); }, 60000);
+    }
+
+    async function schedulerTick(uid) {
+      if (!uid || !currentRole) return;
+      var now = new Date();
+      var hhmm = pad2(now.getHours()) + ':' + pad2(now.getMinutes());
+      L('── schedulerTick at ' + hhmm + ' ──');
+
+      try {
+        await checkTaskResets(uid, now);
+      } catch(e) { L('taskReset error: ' + e.message); }
+
+      try {
+        await checkTierNotifications(uid, now);
+      } catch(e) { L('tierNotif error: ' + e.message); }
+
+      try {
+        await checkCampaignReminders(uid, now);
+      } catch(e) { L('campaignReminder error: ' + e.message); }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // TASK RESETS
+    // ══════════════════════════════════════════════════════════════════════
+    async function checkTaskResets(uid, now) {
+      var rs = userSettings.resetSchedule;
+      if (!rs) return;
+
+      var daily = rs.daily || { time: '00:00' };
+      var weekly = rs.weekly || { dayOfWeek: 1, time: '00:00' };
+      var monthly = rs.monthly || { dayOfMonth: 1, time: '00:00' };
+
+      // Load ALL brands + their tasks
+      var brandSnap = await db.collection('brands').get();
+      var allTasks = [];
+      for (var i = 0; i < brandSnap.docs.length; i++) {
+        var bid = brandSnap.docs[i].id;
+        var tSnap = await db.collection('brands').doc(bid).collection('tasks').get();
+        tSnap.docs.forEach(function(d) { allTasks.push({ ref: d.ref, data: d.data() }); });
+      }
+      // General tasks
+      var gt1 = await db.collection('generalTasks').where('assigneeId', '==', uid).get().catch(function() { return { docs: [] }; });
+      var gt2 = await db.collection('generalTasks').where('createdBy', '==', uid).get().catch(function() { return { docs: [] }; });
+      var seenG = {};
+      gt1.docs.forEach(function(d) { seenG[d.id] = true; allTasks.push({ ref: d.ref, data: d.data() }); });
+      gt2.docs.forEach(function(d) { if (!seenG[d.id]) allTasks.push({ ref: d.ref, data: d.data() }); });
+
+      var resetCount = 0;
+      for (var j = 0; j < allTasks.length; j++) {
+        var task = allTasks[j].data;
+        var ref = allTasks[j].ref;
+        if (!task.category || task.category === 'general') continue;
+        var isMyTask = task.assigneeId === uid || (!task.assigneeId && task.createdBy === uid);
+        if (!isMyTask) continue;
+        if (task.status === 'todo') continue;
+
+        var shouldReset = false;
+        var sched = null;
+
+        if (task.category === 'daily') {
+          sched = daily;
+          var prev = prevOccurrence('daily', daily, now);
+          var lastReset = task.lastResetAt ? task.lastResetAt.toDate() : new Date(0);
+          if (prev <= now && lastReset < prev) shouldReset = true;
+        } else if (task.category === 'weekly') {
+          sched = weekly;
+          var prev = prevOccurrence('weekly', weekly, now);
+          var lastReset = task.lastResetAt ? task.lastResetAt.toDate() : new Date(0);
+          if (prev <= now && lastReset < prev) shouldReset = true;
+        } else if (task.category === 'monthly') {
+          sched = monthly;
+          var prev = prevOccurrence('monthly', monthly, now);
+          var lastReset = task.lastResetAt ? task.lastResetAt.toDate() : new Date(0);
+          if (prev <= now && lastReset < prev) shouldReset = true;
+        }
+
+        if (shouldReset) {
+          var nextReset = nextOccurrence(task.category, sched, now);
+          await ref.update({
+            status: 'todo',
+            lastResetAt: firebase.firestore.Timestamp.fromDate(prevOccurrence(task.category, sched, now)),
+            nextResetAt: nextReset ? firebase.firestore.Timestamp.fromDate(nextReset) : null,
+          });
+          resetCount++;
+          L('Reset task: ' + task.title + ' → todo');
+        }
+      }
+      if (resetCount > 0) L('Reset ' + resetCount + ' task(s)');
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // TIER NOTIFICATIONS
+    // ══════════════════════════════════════════════════════════════════════
+    async function checkTierNotifications(uid, now) {
+      var tn = userSettings.tierNotifications;
+      if (!tn || !tn.enabled) return;
+      if (!['boss', 'ol', 'tl', 'apc'].includes(currentRole)) return;
+
+      var today = now.getDate();
+      var month = now.getMonth();
+      var year = now.getFullYear();
+      var lastDay = new Date(year, month + 1, 0).getDate();
+
+      var slots = [
+        { idx: 1, day: Number(tn.day1), time: tn.time1 || '09:00' },
+        { idx: 2, day: Number(tn.day2), time: tn.time2 || '18:00' },
+      ];
+
+      for (var i = 0; i < slots.length; i++) {
+        var s = slots[i];
+        if (!s.day || s.day < 1 || s.day > 31) continue;
+        var effDay = Math.min(s.day, lastDay);
+        if (today !== effDay) continue;
+
+        var parts = s.time.split(':');
+        var target = new Date(year, month, effDay, parseInt(parts[0]) || 0, parseInt(parts[1]) || 0, 0, 0);
+        if (now < target) continue;
+
+        var firedKey = 'tier-' + year + '-' + (month+1) + '-' + today + '-' + s.idx + '-' + s.time;
+        if (lastFiredKeys.has(firedKey)) continue;
+
+        // Load matching brands
+        var brands = await loadTierBrands(uid);
+        if (brands.length === 0) { lastFiredKeys.add(firedKey); continue; }
+
+        var preview = brands.slice(0, 3).map(function(b) { return b.brandName + ' (' + b.tier + ')'; }).join(', ');
+        var extra = brands.length > 3 ? ' +' + (brands.length - 3) + ' more' : '';
+        var daysLeft = Math.max(0, lastDay - today);
+        var title = daysLeft <= 1 ? 'Month ending — generate tier sales' : 'Tier reminder: ' + daysLeft + ' day' + (daysLeft === 1 ? '' : 's') + ' left';
+        var body = brands.length + ' brand' + (brands.length === 1 ? '' : 's') + ' need sale generation — ' + preview + extra;
+
+        await db.collection('notifications').add({
+          recipientId: uid, senderId: 'system', senderName: 'Tier Tracker',
+          category: 'tier', action: 'reminder', title: title, body: body,
+          read: false, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        lastFiredKeys.add(firedKey);
+        L('Tier notification fired: slot ' + s.idx);
+      }
+    }
+
+    async function loadTierBrands(uid) {
+      var snap = await db.collection('brands').get();
+      return snap.docs.map(function(d) { return Object.assign({ id: d.id }, d.data()); }).filter(function(b) {
+        if (!b.tier || b.tier.toLowerCase() === 'unlimited') return false;
+        if (currentRole === 'boss' || currentRole === 'ol') return true;
+        if (currentRole === 'tl') return b.ownerId === uid;
+        if (currentRole === 'apc') return (b.assignedUsers || []).some(function(u) { return u.id === uid; });
+        return false;
+      });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // CAMPAIGN REMINDERS
+    // ══════════════════════════════════════════════════════════════════════
+    async function checkCampaignReminders(uid, now) {
+      var cr = userSettings.campaignReminder || { leadDays: 2, time: '09:00', bossScope: 'mine' };
+      var leadDays = cr.leadDays != null ? cr.leadDays : 2;
+      var parts = (cr.time || '09:00').split(':');
+      var rH = parseInt(parts[0]) || 0;
+      var rM = parseInt(parts[1]) || 0;
+      var MS_DAY = 86400000;
+
+      // Load campaigns relevant to this user
+      var campaigns = [];
+      if (currentRole === 'apc') {
+        // Load user's assigned brand IDs
+        var profileSnap = await db.collection('teamUsers').doc(uid).get().catch(function() { return { exists: false }; });
+        var assignedIds = [];
+        if (profileSnap.exists) {
+          assignedIds = (profileSnap.data().assignedBrands || []).map(function(b) { return b.id; }).filter(Boolean);
+        }
+        if (assignedIds.length > 0) {
+          // Firestore 'in' supports max 30
+          for (var ci = 0; ci < assignedIds.length; ci += 30) {
+            var chunk = assignedIds.slice(ci, ci + 30);
+            var cSnap = await db.collection('campaigns').where('brandId', 'in', chunk).get();
+            cSnap.docs.forEach(function(d) { campaigns.push(Object.assign({ id: d.id, ref: d.ref }, d.data())); });
+          }
+        }
+      } else if (currentRole === 'tl') {
+        var cSnap = await db.collection('campaigns').where('ownerId', '==', uid).get();
+        campaigns = cSnap.docs.map(function(d) { return Object.assign({ id: d.id, ref: d.ref }, d.data()); });
+      } else if (currentRole === 'boss') {
+        if (cr.bossScope === 'all') {
+          var cSnap = await db.collection('campaigns').get();
+          campaigns = cSnap.docs.map(function(d) { return Object.assign({ id: d.id, ref: d.ref }, d.data()); });
+        } else {
+          var cSnap = await db.collection('campaigns').where('addedBy', '==', uid).get();
+          campaigns = cSnap.docs.map(function(d) { return Object.assign({ id: d.id, ref: d.ref }, d.data()); });
+        }
+      }
+
+      for (var k = 0; k < campaigns.length; k++) {
+        var c = campaigns[k];
+        if (c.status !== 'Ongoing' && c.status !== 'Upcoming') continue;
+        if (!c.endTime) continue;
+
+        var endDate = c.endTime.toDate ? c.endTime.toDate() : new Date(c.endTime);
+        if (now >= endDate) continue; // already ended
+
+        // Compute reminder moment
+        var reminderDay = new Date(endDate.getTime() - leadDays * MS_DAY);
+        reminderDay.setHours(rH, rM, 0, 0);
+        if (now < reminderDay) continue; // not time yet
+
+        var firedKey = 'camp-' + c.id + '-' + now.getFullYear() + '-' + (now.getMonth()+1) + '-' + now.getDate() + '-' + cr.time;
+        if (lastFiredKeys.has(firedKey)) continue;
+
+        // Check if already notified on campaign doc
+        var notifiedIds = c.notifiedUserIds || [];
+        if (notifiedIds.includes(uid)) { lastFiredKeys.add(firedKey); continue; }
+
+        // Fire notification
+        var dMs = endDate - now;
+        var dHours = Math.floor(dMs / 3600000);
+        var relText = dHours < 24 ? (dHours <= 1 ? 'in less than an hour' : 'in ' + dHours + ' hours') :
+          (Math.floor(dHours / 24) === 1 ? 'tomorrow' : 'in ' + Math.floor(dHours / 24) + ' days');
+
+        await db.collection('notifications').add({
+          recipientId: uid, senderId: 'system', senderName: 'Campaign Tracker',
+          category: 'campaign', action: 'reminder',
+          title: 'Campaign ending: "' + (c.promotionName || 'Untitled') + '"',
+          body: (c.brandName ? '[' + c.brandName + '] ' : '') + '"' + (c.promotionName || 'Untitled') + '" ends ' + relText + '.',
+          read: false, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          brandId: c.brandId || null, brandName: c.brandName || '',
+        });
+        // Mark as notified on campaign doc
+        await c.ref.update({ notifiedUserIds: firebase.firestore.FieldValue.arrayUnion(uid) });
+        lastFiredKeys.add(firedKey);
+        L('Campaign reminder fired: ' + c.promotionName);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // HELPERS
+    // ══════════════════════════════════════════════════════════════════════
+    function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+    function prevOccurrence(category, sched, now) {
+      var parts = (sched.time || '00:00').split(':');
+      var h = parseInt(parts[0]) || 0;
+      var m = parseInt(parts[1]) || 0;
+
+      if (category === 'daily') {
+        var c = new Date(now); c.setHours(h, m, 0, 0);
+        if (c > now) c.setDate(c.getDate() - 1);
+        return c;
+      }
+      if (category === 'weekly') {
+        var dow = sched.dayOfWeek != null ? sched.dayOfWeek : 1;
+        var cur = now.getDay();
+        var back = (cur - dow + 7) % 7;
+        var c = new Date(now); c.setDate(now.getDate() - back); c.setHours(h, m, 0, 0);
+        if (c > now) c.setDate(c.getDate() - 7);
+        return c;
+      }
+      if (category === 'monthly') {
+        var dom = sched.dayOfMonth != null ? sched.dayOfMonth : 1;
+        var c = new Date(now); c.setDate(dom); c.setHours(h, m, 0, 0);
+        if (c > now) c.setMonth(c.getMonth() - 1);
+        return c;
+      }
+      return null;
+    }
+
+    function nextOccurrence(category, sched, now) {
+      var parts = (sched.time || '00:00').split(':');
+      var h = parseInt(parts[0]) || 0;
+      var m = parseInt(parts[1]) || 0;
+
+      if (category === 'daily') {
+        var c = new Date(now); c.setHours(h, m, 0, 0);
+        if (c <= now) c.setDate(c.getDate() + 1);
+        return c;
+      }
+      if (category === 'weekly') {
+        var dow = sched.dayOfWeek != null ? sched.dayOfWeek : 1;
+        var cur = now.getDay();
+        var ahead = (dow - cur + 7) % 7;
+        if (ahead === 0) {
+          var same = new Date(now); same.setHours(h, m, 0, 0);
+          if (same <= now) ahead = 7;
+        }
+        var c = new Date(now); c.setDate(now.getDate() + ahead); c.setHours(h, m, 0, 0);
+        return c;
+      }
+      if (category === 'monthly') {
+        var dom = sched.dayOfMonth != null ? sched.dayOfMonth : 1;
+        var c = new Date(now); c.setDate(dom); c.setHours(h, m, 0, 0);
+        if (c <= now) c.setMonth(c.getMonth() + 1);
+        return c;
+      }
+      return null;
+    }
+
+    // ── Cleanup ────────────────────────────────────────────────────────────
+    function stopAll() {
       if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
+      if (unsubSettings) { unsubSettings(); unsubSettings = null; }
+      if (schedulerInterval) { clearInterval(schedulerInterval); schedulerInterval = null; }
       Object.values(snoozedTimers).forEach(function(t) { clearTimeout(t); });
       snoozedTimers = {};
+      lastFiredKeys.clear();
     }
 
-    // Listen for mark-read requests from notification windows (routed via main process)
+    // ── IPC handlers ───────────────────────────────────────────────────────
     window.agent.onMarkRead(function(notifId) {
       db.collection('notifications').doc(notifId).update({ read: true }).catch(function(err) {
         console.error('Failed to mark read:', err);
       });
     });
 
-    // Listen for snooze requests relayed from notification windows via main process
     window.agent.onSnoozeRequest(function(data) {
       var notifId = data.notifId;
       var minutes = data.minutes;
