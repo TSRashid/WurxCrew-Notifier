@@ -236,43 +236,83 @@
     }
 
     // ── Settings sync (real-time) ──────────────────────────────────────────
+    var unsubTeamUsers = null;
+
+    var settingsLoaded = false; // true after first sync
+
+    function campaignChanged(a, b) {
+      if (!a && !b) return false;
+      if (!a || !b) return true;
+      return a.leadDays !== b.leadDays || a.time !== b.time || a.bossScope !== b.bossScope;
+    }
+    function tierChanged(a, b) {
+      if (!a && !b) return false;
+      if (!a || !b) return true;
+      return a.enabled !== b.enabled || a.day1 !== b.day1 || a.time1 !== b.time1 || a.day2 !== b.day2 || a.time2 !== b.time2;
+    }
+    function clearKeysByPrefix(prefix) {
+      var toDelete = [];
+      lastFiredKeys.forEach(function(k) { if (k.startsWith(prefix)) toDelete.push(k); });
+      toDelete.forEach(function(k) { lastFiredKeys.delete(k); });
+      L('Cleared ' + toDelete.length + ' fired keys with prefix: ' + prefix);
+    }
+
+    function applySettings(data, source) {
+      currentRole = data.role || null;
+      var newSettings = {
+        resetSchedule: data.resetSchedule || null,
+        tierNotifications: data.tierNotifications || null,
+        campaignReminder: data.campaignReminder || null,
+      };
+
+      if (settingsLoaded) {
+        // Only clear fired keys for the specific type that actually changed
+        if (campaignChanged(newSettings.campaignReminder, userSettings.campaignReminder)) {
+          L('Campaign settings changed');
+          clearKeysByPrefix('camp-');
+        }
+        if (tierChanged(newSettings.tierNotifications, userSettings.tierNotifications)) {
+          L('Tier settings changed');
+          clearKeysByPrefix('tier-');
+        }
+      }
+
+      userSettings = newSettings;
+      L('Settings synced (' + source + '): role=' + currentRole);
+      setStatus('synced — ' + currentRole);
+
+      if (settingsLoaded) {
+        // Re-run scheduler only on actual settings changes (not initial load)
+        if (currentUid) schedulerTick(currentUid);
+      }
+      settingsLoaded = true;
+    }
+
     function startSettingsSync(uid) {
       L('startSettingsSync: ' + uid);
       if (unsubSettings) unsubSettings();
+      if (unsubTeamUsers) { unsubTeamUsers(); unsubTeamUsers = null; }
 
       // Listen to users doc first
-      unsubSettings = db.collection('users').doc(uid).onSnapshot(function(snap) {
+      var unsubUsers = db.collection('users').doc(uid).onSnapshot(function(snap) {
         if (snap.exists) {
-          var data = snap.data();
-          currentRole = data.role || null;
-          userSettings = {
-            resetSchedule: data.resetSchedule || null,
-            tierNotifications: data.tierNotifications || null,
-            campaignReminder: data.campaignReminder || null,
-          };
-          L('Settings synced (users): role=' + currentRole + ' reset=' + JSON.stringify(userSettings.resetSchedule));
-          lastFiredKeys.clear(); // allow re-fire on settings change
-          setStatus('synced — ' + currentRole);
-        } else {
-          // Try teamUsers (APC/IPC)
-          db.collection('teamUsers').doc(uid).get().then(function(tSnap) {
+          applySettings(snap.data(), 'users');
+        } else if (!unsubTeamUsers) {
+          // Not in users collection — listen to teamUsers (APC/IPC) in real-time
+          unsubTeamUsers = db.collection('teamUsers').doc(uid).onSnapshot(function(tSnap) {
             if (tSnap.exists) {
-              var data = tSnap.data();
-              currentRole = data.role || 'apc';
-              userSettings = {
-                resetSchedule: data.resetSchedule || null,
-                tierNotifications: data.tierNotifications || null,
-                campaignReminder: data.campaignReminder || null,
-              };
-              L('Settings synced (teamUsers): role=' + currentRole);
-              lastFiredKeys.clear();
-              setStatus('synced — ' + currentRole);
+              applySettings(tSnap.data(), 'teamUsers');
             }
-          });
+          }, function(err) { L('teamUsers sync ERROR: ' + err.message); });
         }
       }, function(err) {
         L('Settings sync ERROR: ' + err.message);
       });
+
+      unsubSettings = function() {
+        if (unsubUsers) unsubUsers();
+        if (unsubTeamUsers) { unsubTeamUsers(); unsubTeamUsers = null; }
+      };
     }
 
     // ── Scheduler — runs every 60 seconds ─────────────────────────────────
@@ -301,6 +341,10 @@
       try {
         await checkCampaignReminders(uid, now);
       } catch(e) { L('campaignReminder error: ' + e.message); }
+
+      try {
+        await checkPersonalReminders(uid, now);
+      } catch(e) { L('personalReminder error: ' + e.message); }
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -358,6 +402,13 @@
           if (prev <= now && lastReset < prev) shouldReset = true;
         }
 
+        // Guard: configured time must have passed TODAY before resetting
+        if (shouldReset && sched) {
+          var tp = (sched.time || '00:00').split(':');
+          var todayAtTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(tp[0]) || 0, parseInt(tp[1]) || 0, 0, 0);
+          if (now < todayAtTime) shouldReset = false;
+        }
+
         if (shouldReset) {
           var nextReset = nextOccurrence(task.category, sched, now);
           await ref.update({
@@ -394,13 +445,16 @@
         var s = slots[i];
         if (!s.day || s.day < 1 || s.day > 31) continue;
         var effDay = Math.min(s.day, lastDay);
-        if (today !== effDay) continue;
 
+        // If today hasn't reached the configured day yet, skip
+        if (today < effDay) continue;
+
+        // Configured day has arrived or passed — only fire at the configured time TODAY
         var parts = s.time.split(':');
-        var target = new Date(year, month, effDay, parseInt(parts[0]) || 0, parseInt(parts[1]) || 0, 0, 0);
-        if (now < target) continue;
+        var todayTarget = new Date(year, month, today, parseInt(parts[0]) || 0, parseInt(parts[1]) || 0, 0, 0);
+        if (now < todayTarget) continue;
 
-        var firedKey = 'tier-' + year + '-' + (month+1) + '-' + today + '-' + s.idx + '-' + s.time;
+        var firedKey = 'tier-' + year + '-' + (month+1) + '-' + s.idx;
         if (lastFiredKeys.has(firedKey)) continue;
 
         // Load matching brands
@@ -483,19 +537,20 @@
         var endDate = c.endTime.toDate ? c.endTime.toDate() : new Date(c.endTime);
         if (now >= endDate) continue; // already ended
 
-        // Compute reminder moment
-        var reminderDay = new Date(endDate.getTime() - leadDays * MS_DAY);
-        reminderDay.setHours(rH, rM, 0, 0);
-        if (now < reminderDay) continue; // not time yet
+        // Compute reminder date (without time)
+        var reminderDate = new Date(endDate.getTime() - leadDays * MS_DAY);
+        reminderDate.setHours(0, 0, 0, 0);
+        var todayMidnight = new Date(now); todayMidnight.setHours(0, 0, 0, 0);
+        if (todayMidnight < reminderDate) continue; // reminder date hasn't arrived yet
 
-        var firedKey = 'camp-' + c.id + '-' + now.getFullYear() + '-' + (now.getMonth()+1) + '-' + now.getDate() + '-' + cr.time;
+        // Reminder date has arrived or passed — but only fire at the configured time TODAY
+        var todayAtTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), rH, rM, 0, 0);
+        if (now < todayAtTime) continue; // configured time hasn't come yet today
+
+        var firedKey = 'camp-' + c.id;
         if (lastFiredKeys.has(firedKey)) continue;
 
-        // Check if already notified on campaign doc
-        var notifiedIds = c.notifiedUserIds || [];
-        if (notifiedIds.includes(uid)) { lastFiredKeys.add(firedKey); continue; }
-
-        // Fire notification
+        // Fire notification (no Firestore-level dedup — re-fires after settings change)
         var dMs = endDate - now;
         var dHours = Math.floor(dMs / 3600000);
         var relText = dHours < 24 ? (dHours <= 1 ? 'in less than an hour' : 'in ' + dHours + ' hours') :
@@ -509,10 +564,43 @@
           read: false, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
           brandId: c.brandId || null, brandName: c.brandName || '',
         });
-        // Mark as notified on campaign doc
-        await c.ref.update({ notifiedUserIds: firebase.firestore.FieldValue.arrayUnion(uid) });
         lastFiredKeys.add(firedKey);
         L('Campaign reminder fired: ' + c.promotionName);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PERSONAL REMINDERS
+    // ══════════════════════════════════════════════════════════════════════
+    async function checkPersonalReminders(uid, now) {
+      var snap = await db.collection('reminders')
+        .where('userId', '==', uid)
+        .where('triggered', '==', false)
+        .get();
+
+      for (var i = 0; i < snap.docs.length; i++) {
+        var doc = snap.docs[i];
+        var data = doc.data();
+        if (!data.dueAt) continue;
+        var dueDate = data.dueAt.toDate ? data.dueAt.toDate() : new Date(data.dueAt);
+        if (now < dueDate) continue;
+
+        var firedKey = 'reminder-' + doc.id;
+        if (lastFiredKeys.has(firedKey)) continue;
+
+        // Mark as triggered
+        await doc.ref.update({ triggered: true });
+
+        // Create a notification so user gets a desktop popup
+        await db.collection('notifications').add({
+          recipientId: uid, senderId: 'system', senderName: 'Reminder',
+          category: 'reminder', action: 'due',
+          title: data.title || 'Reminder',
+          body: data.description || 'Your reminder is due.',
+          read: false, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        lastFiredKeys.add(firedKey);
+        L('Personal reminder fired: ' + (data.title || doc.id));
       }
     }
 
@@ -582,10 +670,12 @@
     function stopAll() {
       if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
       if (unsubSettings) { unsubSettings(); unsubSettings = null; }
+      if (unsubTeamUsers) { unsubTeamUsers(); unsubTeamUsers = null; }
       if (schedulerInterval) { clearInterval(schedulerInterval); schedulerInterval = null; }
       Object.values(snoozedTimers).forEach(function(t) { clearTimeout(t); });
       snoozedTimers = {};
       lastFiredKeys.clear();
+      settingsLoaded = false;
     }
 
     // ── IPC handlers ───────────────────────────────────────────────────────
