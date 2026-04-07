@@ -38,10 +38,8 @@ app.on('second-instance', () => {
 // ── App ready ───────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   log('App ready fired');
-  if (process.platform === 'darwin') {
-    log('macOS detected — hiding dock');
-    app.dock?.hide();
-  }
+  // Keep dock icon visible on macOS so users can find the app
+  log(`macOS: ${process.platform === 'darwin'}`);
   log('Creating tray...');
   createTray();
   log('Tray created. Creating main window...');
@@ -105,14 +103,8 @@ function createMainWindow() {
 ipcMain.handle('auth-state-changed', (_, loggedIn) => {
   log(`auth-state-changed: loggedIn=${loggedIn}`);
   updateTrayMenu(loggedIn);
-  if (loggedIn && mainWindow) {
-    log('User logged in — will hide window in 500ms');
-    setTimeout(() => {
-      log('Hiding main window now');
-      if (mainWindow) mainWindow.hide();
-      log('Main window hidden');
-    }, 500);
-  }
+  // Don't auto-hide — let user see the "Connected & Listening" screen
+  // They can close the window manually (it hides to tray)
 });
 
 ipcMain.handle('hide-window', () => { log('hide-window called'); if (mainWindow) mainWindow.hide(); });
