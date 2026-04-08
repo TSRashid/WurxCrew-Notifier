@@ -85,7 +85,7 @@ function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 380, height: 460,
     resizable: false, maximizable: false, minimizable: true,
-    frame: false, show: true,
+    frame: false, show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
