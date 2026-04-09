@@ -4,25 +4,24 @@
   "description": "WurxOS Notification Agent — system tray app for push notifications",
   "main": "src/main.js",
   "private": true,
-
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac"
   },
-
   "devDependencies": {
     "electron": "^35.0.0",
     "electron-builder": "^25.1.8"
   },
-
   "build": {
     "extends": null,
     "appId": "com.wurxos.notifier",
     "productName": "WurxOS Notifier",
     "copyright": "Copyright 2025 WurxOS",
-    "directories": { "output": "dist" },
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "src/**/*",
       "assets/**/*",
@@ -30,11 +29,15 @@
       "package.json"
     ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon.ico"
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "icon": "assets/icon.png",
       "category": "public.app-category.utilities",
       "identity": null
@@ -43,5 +46,8 @@
       "oneClick": true,
       "perMachine": false
     }
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
   }
 }

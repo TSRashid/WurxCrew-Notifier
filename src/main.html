@@ -133,14 +133,13 @@
     var auth = firebase.auth();
     var db = firebase.firestore();
     var unsubFirestore = null;
-    var unsubSettings = null;
     var schedulerInterval = null;
     var seenIds = new Set();
     var snoozedTimers = {};
     var currentUid = null;
     var currentRole = null;
-    var userSettings = {};
-    var lastFiredKeys = new Set(); // prevents duplicate fires within same minute
+    var userSettings = {};     // in-memory copy of local settings
+    var lastFiredKeys = new Set();
 
     function L(msg) { window.agent.log(msg); }
     function setStatus(msg) {
@@ -173,7 +172,7 @@
     }
 
     // ── Auth state ─────────────────────────────────────────────────────────
-    auth.onAuthStateChanged(function(user) {
+    auth.onAuthStateChanged(async function(user) {
       L('onAuthStateChanged: ' + (user ? user.email : 'null'));
       if (user) {
         currentUid = user.uid;
@@ -181,8 +180,17 @@
         document.getElementById('connectedView').style.display = 'flex';
         document.getElementById('userEmail').textContent = user.email;
         window.agent.authStateChanged(true);
+
+        // Load role from Firestore ONCE (needed for permission checks)
+        await loadRoleOnce(user.uid);
+
+        // Load settings from local storage
+        await loadLocalSettings();
+
+        // Start notification listener (this is the ONLY onSnapshot we keep)
         startListening(user.uid);
-        startSettingsSync(user.uid);
+
+        // Start scheduler
         startScheduler(user.uid);
       } else {
         currentUid = null;
@@ -197,7 +205,77 @@
       }
     });
 
-    // ── Notification listener ──────────────────────────────────────────────
+    // ── Load role once from Firestore ──────────────────────────────────────
+    async function loadRoleOnce(uid) {
+      try {
+        var snap = await db.collection('users').doc(uid).get();
+        if (snap.exists) {
+          currentRole = snap.data().role || null;
+        } else {
+          var tSnap = await db.collection('teamUsers').doc(uid).get();
+          if (tSnap.exists) currentRole = tSnap.data().role || null;
+        }
+        // Save role locally
+        await window.agent.storeSet('role', currentRole);
+        L('Role loaded: ' + currentRole);
+      } catch (e) {
+        // Fallback to local
+        currentRole = await window.agent.storeGet('role');
+        L('Role from local fallback: ' + currentRole);
+      }
+    }
+
+    // ── Load settings from local storage ──────────────────────────────────
+    async function loadLocalSettings() {
+      var stored = await window.agent.storeGet('settings');
+      if (stored) {
+        userSettings = stored;
+        L('Settings loaded from local: ' + JSON.stringify(Object.keys(stored)));
+        setStatus('local settings loaded — ' + currentRole);
+      } else {
+        userSettings = {};
+        L('No local settings found — waiting for web app to send settings');
+        setStatus('waiting for settings — ' + currentRole);
+      }
+    }
+
+    // ── WebSocket settings relay from main process ────────────────────────
+    function clearKeysByPrefix(prefix) {
+      var toDelete = [];
+      lastFiredKeys.forEach(function(k) { if (k.startsWith(prefix)) toDelete.push(k); });
+      toDelete.forEach(function(k) { lastFiredKeys.delete(k); });
+      L('Cleared ' + toDelete.length + ' fired keys with prefix: ' + prefix);
+    }
+
+    // When web app sends settings via WebSocket → main.js → here
+    window.agent.onWsSettingsUpdate(function(msg) {
+      var key = msg.key;
+      var data = msg.data;
+      L('Settings update from WebSocket: ' + key);
+
+      // Clear fired keys for the changed type
+      if (key === 'campaignReminder') clearKeysByPrefix('camp-');
+      if (key === 'tierNotifications') clearKeysByPrefix('tier-');
+      if (key === 'productCampaignReminder') clearKeysByPrefix('prodcamp-');
+      if (key === 'resetSchedule') clearKeysByPrefix('reset-');
+
+      // Update in-memory settings
+      userSettings[key] = data;
+      setStatus('settings updated — ' + key);
+
+      // Re-run scheduler immediately
+      if (currentUid) schedulerTick(currentUid);
+    });
+
+    // When web app sends auth info
+    window.agent.onWsAuth(function(msg) {
+      if (msg.role && msg.role !== currentRole) {
+        currentRole = msg.role;
+        L('Role updated from WebSocket: ' + currentRole);
+      }
+    });
+
+    // ── Notification listener (ONLY onSnapshot we keep) ───────────────────
     function startListening(uid) {
       L('startListening: ' + uid);
       if (unsubFirestore) unsubFirestore();
@@ -226,6 +304,7 @@
                 body: data.body || '',
                 category: data.category || 'task',
                 senderName: data.senderName || '',
+                recipientId: data.recipientId || '',
                 createdAt: data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().getTime() : Date.now(),
               });
             }
@@ -235,91 +314,10 @@
         });
     }
 
-    // ── Settings sync (real-time) ──────────────────────────────────────────
-    var unsubTeamUsers = null;
-
-    var settingsLoaded = false; // true after first sync
-
-    function campaignChanged(a, b) {
-      if (!a && !b) return false;
-      if (!a || !b) return true;
-      return a.leadDays !== b.leadDays || a.time !== b.time || a.bossScope !== b.bossScope;
-    }
-    function tierChanged(a, b) {
-      if (!a && !b) return false;
-      if (!a || !b) return true;
-      return a.enabled !== b.enabled || a.day1 !== b.day1 || a.time1 !== b.time1 || a.day2 !== b.day2 || a.time2 !== b.time2;
-    }
-    function clearKeysByPrefix(prefix) {
-      var toDelete = [];
-      lastFiredKeys.forEach(function(k) { if (k.startsWith(prefix)) toDelete.push(k); });
-      toDelete.forEach(function(k) { lastFiredKeys.delete(k); });
-      L('Cleared ' + toDelete.length + ' fired keys with prefix: ' + prefix);
-    }
-
-    function applySettings(data, source) {
-      currentRole = data.role || null;
-      var newSettings = {
-        resetSchedule: data.resetSchedule || null,
-        tierNotifications: data.tierNotifications || null,
-        campaignReminder: data.campaignReminder || null,
-      };
-
-      if (settingsLoaded) {
-        // Only clear fired keys for the specific type that actually changed
-        if (campaignChanged(newSettings.campaignReminder, userSettings.campaignReminder)) {
-          L('Campaign settings changed');
-          clearKeysByPrefix('camp-');
-        }
-        if (tierChanged(newSettings.tierNotifications, userSettings.tierNotifications)) {
-          L('Tier settings changed');
-          clearKeysByPrefix('tier-');
-        }
-      }
-
-      userSettings = newSettings;
-      L('Settings synced (' + source + '): role=' + currentRole);
-      setStatus('synced — ' + currentRole);
-
-      if (settingsLoaded) {
-        // Re-run scheduler only on actual settings changes (not initial load)
-        if (currentUid) schedulerTick(currentUid);
-      }
-      settingsLoaded = true;
-    }
-
-    function startSettingsSync(uid) {
-      L('startSettingsSync: ' + uid);
-      if (unsubSettings) unsubSettings();
-      if (unsubTeamUsers) { unsubTeamUsers(); unsubTeamUsers = null; }
-
-      // Listen to users doc first
-      var unsubUsers = db.collection('users').doc(uid).onSnapshot(function(snap) {
-        if (snap.exists) {
-          applySettings(snap.data(), 'users');
-        } else if (!unsubTeamUsers) {
-          // Not in users collection — listen to teamUsers (APC/IPC) in real-time
-          unsubTeamUsers = db.collection('teamUsers').doc(uid).onSnapshot(function(tSnap) {
-            if (tSnap.exists) {
-              applySettings(tSnap.data(), 'teamUsers');
-            }
-          }, function(err) { L('teamUsers sync ERROR: ' + err.message); });
-        }
-      }, function(err) {
-        L('Settings sync ERROR: ' + err.message);
-      });
-
-      unsubSettings = function() {
-        if (unsubUsers) unsubUsers();
-        if (unsubTeamUsers) { unsubTeamUsers(); unsubTeamUsers = null; }
-      };
-    }
-
-    // ── Scheduler — runs every 60 seconds ─────────────────────────────────
+    // ── Scheduler — checks LOCAL settings every 60 seconds ────────────────
     function startScheduler(uid) {
       L('startScheduler');
       if (schedulerInterval) clearInterval(schedulerInterval);
-      // Run immediately + every 60s
       schedulerTick(uid);
       schedulerInterval = setInterval(function() { schedulerTick(uid); }, 60000);
     }
@@ -330,25 +328,25 @@
       var hhmm = pad2(now.getHours()) + ':' + pad2(now.getMinutes());
       L('── schedulerTick at ' + hhmm + ' ──');
 
-      try {
-        await checkTaskResets(uid, now);
-      } catch(e) { L('taskReset error: ' + e.message); }
+      // All checks read from LOCAL userSettings, only hit Firestore at trigger time
+      try { await checkTaskResets(uid, now); }
+      catch(e) { L('taskReset error: ' + e.message); }
 
-      try {
-        await checkTierNotifications(uid, now);
-      } catch(e) { L('tierNotif error: ' + e.message); }
+      try { await checkTierNotifications(uid, now); }
+      catch(e) { L('tierNotif error: ' + e.message); }
 
-      try {
-        await checkCampaignReminders(uid, now);
-      } catch(e) { L('campaignReminder error: ' + e.message); }
+      try { await checkCampaignReminders(uid, now); }
+      catch(e) { L('campaignReminder error: ' + e.message); }
 
-      try {
-        await checkPersonalReminders(uid, now);
-      } catch(e) { L('personalReminder error: ' + e.message); }
+      try { await checkPersonalReminders(uid, now); }
+      catch(e) { L('personalReminder error: ' + e.message); }
+
+      try { await checkProductCampaigns(uid, now); }
+      catch(e) { L('productCampaign error: ' + e.message); }
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // TASK RESETS
+    // TASK RESETS — reads local settings, hits Firestore ONLY to reset tasks
     // ══════════════════════════════════════════════════════════════════════
     async function checkTaskResets(uid, now) {
       var rs = userSettings.resetSchedule;
@@ -358,7 +356,16 @@
       var weekly = rs.weekly || { dayOfWeek: 1, time: '00:00' };
       var monthly = rs.monthly || { dayOfMonth: 1, time: '00:00' };
 
-      // Load ALL brands + their tasks
+      // Check if any schedule is due — if not, return early (no Firestore call)
+      var dailyDue = isScheduleDue('daily', daily, now);
+      var weeklyDue = isScheduleDue('weekly', weekly, now);
+      var monthlyDue = isScheduleDue('monthly', monthly, now);
+
+      if (!dailyDue && !weeklyDue && !monthlyDue) return;
+
+      L('Task reset due — fetching tasks from Firestore');
+
+      // NOW hit Firestore to get actual tasks
       var brandSnap = await db.collection('brands').get();
       var allTasks = [];
       for (var i = 0; i < brandSnap.docs.length; i++) {
@@ -366,7 +373,6 @@
         var tSnap = await db.collection('brands').doc(bid).collection('tasks').get();
         tSnap.docs.forEach(function(d) { allTasks.push({ ref: d.ref, data: d.data() }); });
       }
-      // General tasks
       var gt1 = await db.collection('generalTasks').where('assigneeId', '==', uid).get().catch(function() { return { docs: [] }; });
       var gt2 = await db.collection('generalTasks').where('createdBy', '==', uid).get().catch(function() { return { docs: [] }; });
       var seenG = {};
@@ -385,28 +391,21 @@
         var shouldReset = false;
         var sched = null;
 
-        if (task.category === 'daily') {
+        if (task.category === 'daily' && dailyDue) {
           sched = daily;
           var prev = prevOccurrence('daily', daily, now);
           var lastReset = task.lastResetAt ? task.lastResetAt.toDate() : new Date(0);
           if (prev <= now && lastReset < prev) shouldReset = true;
-        } else if (task.category === 'weekly') {
+        } else if (task.category === 'weekly' && weeklyDue) {
           sched = weekly;
           var prev = prevOccurrence('weekly', weekly, now);
           var lastReset = task.lastResetAt ? task.lastResetAt.toDate() : new Date(0);
           if (prev <= now && lastReset < prev) shouldReset = true;
-        } else if (task.category === 'monthly') {
+        } else if (task.category === 'monthly' && monthlyDue) {
           sched = monthly;
           var prev = prevOccurrence('monthly', monthly, now);
           var lastReset = task.lastResetAt ? task.lastResetAt.toDate() : new Date(0);
           if (prev <= now && lastReset < prev) shouldReset = true;
-        }
-
-        // Guard: configured time must have passed TODAY before resetting
-        if (shouldReset && sched) {
-          var tp = (sched.time || '00:00').split(':');
-          var todayAtTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(tp[0]) || 0, parseInt(tp[1]) || 0, 0, 0);
-          if (now < todayAtTime) shouldReset = false;
         }
 
         if (shouldReset) {
@@ -423,8 +422,33 @@
       if (resetCount > 0) L('Reset ' + resetCount + ' task(s)');
     }
 
+    // Returns true if the schedule time has passed today and hasn't been fired yet
+    function isScheduleDue(category, sched, now) {
+      var tp = (sched.time || '00:00').split(':');
+      var todayAtTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(tp[0]) || 0, parseInt(tp[1]) || 0, 0, 0);
+      if (now < todayAtTime) return false;
+
+      var firedKey = 'reset-' + category + '-' + now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+      if (lastFiredKeys.has(firedKey)) return false;
+
+      // For weekly, check day of week
+      if (category === 'weekly') {
+        var dow = sched.dayOfWeek != null ? sched.dayOfWeek : 1;
+        if (now.getDay() !== dow) return false;
+      }
+      // For monthly, check day of month
+      if (category === 'monthly') {
+        var dom = sched.dayOfMonth != null ? sched.dayOfMonth : 1;
+        var lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        if (now.getDate() !== Math.min(dom, lastDay)) return false;
+      }
+
+      lastFiredKeys.add(firedKey);
+      return true;
+    }
+
     // ══════════════════════════════════════════════════════════════════════
-    // TIER NOTIFICATIONS
+    // TIER NOTIFICATIONS — local settings, Firestore only at trigger time
     // ══════════════════════════════════════════════════════════════════════
     async function checkTierNotifications(uid, now) {
       var tn = userSettings.tierNotifications;
@@ -445,11 +469,8 @@
         var s = slots[i];
         if (!s.day || s.day < 1 || s.day > 31) continue;
         var effDay = Math.min(s.day, lastDay);
-
-        // If today hasn't reached the configured day yet, skip
         if (today < effDay) continue;
 
-        // Configured day has arrived or passed — only fire at the configured time TODAY
         var parts = s.time.split(':');
         var todayTarget = new Date(year, month, today, parseInt(parts[0]) || 0, parseInt(parts[1]) || 0, 0, 0);
         if (now < todayTarget) continue;
@@ -457,7 +478,8 @@
         var firedKey = 'tier-' + year + '-' + (month+1) + '-' + s.idx;
         if (lastFiredKeys.has(firedKey)) continue;
 
-        // Load matching brands
+        // NOW hit Firestore for brand data
+        L('Tier notification due — fetching brands from Firestore');
         var brands = await loadTierBrands(uid);
         if (brands.length === 0) { lastFiredKeys.add(firedKey); continue; }
 
@@ -489,7 +511,7 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // CAMPAIGN REMINDERS
+    // CAMPAIGN REMINDERS — local settings, Firestore at trigger time
     // ══════════════════════════════════════════════════════════════════════
     async function checkCampaignReminders(uid, now) {
       var cr = userSettings.campaignReminder || { leadDays: 2, time: '09:00', bossScope: 'mine' };
@@ -497,19 +519,27 @@
       var parts = (cr.time || '09:00').split(':');
       var rH = parseInt(parts[0]) || 0;
       var rM = parseInt(parts[1]) || 0;
+
+      // Time check — don't hit Firestore until configured time
+      var todayAtTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), rH, rM, 0, 0);
+      if (now < todayAtTime) return;
+
+      // Check if already fired today
+      var dailyKey = 'camp-check-' + now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+      if (lastFiredKeys.has(dailyKey)) return;
+
+      L('Campaign reminder due — fetching campaigns from Firestore');
       var MS_DAY = 86400000;
 
-      // Load campaigns relevant to this user
+      // NOW hit Firestore
       var campaigns = [];
       if (currentRole === 'apc') {
-        // Load user's assigned brand IDs
         var profileSnap = await db.collection('teamUsers').doc(uid).get().catch(function() { return { exists: false }; });
         var assignedIds = [];
         if (profileSnap.exists) {
           assignedIds = (profileSnap.data().assignedBrands || []).map(function(b) { return b.id; }).filter(Boolean);
         }
         if (assignedIds.length > 0) {
-          // Firestore 'in' supports max 30
           for (var ci = 0; ci < assignedIds.length; ci += 30) {
             var chunk = assignedIds.slice(ci, ci + 30);
             var cSnap = await db.collection('campaigns').where('brandId', 'in', chunk).get();
@@ -529,28 +559,23 @@
         }
       }
 
+      var firedAny = false;
       for (var k = 0; k < campaigns.length; k++) {
         var c = campaigns[k];
         if (c.status !== 'Ongoing' && c.status !== 'Upcoming') continue;
         if (!c.endTime) continue;
 
         var endDate = c.endTime.toDate ? c.endTime.toDate() : new Date(c.endTime);
-        if (now >= endDate) continue; // already ended
+        if (now >= endDate) continue;
 
-        // Compute reminder date (without time)
         var reminderDate = new Date(endDate.getTime() - leadDays * MS_DAY);
         reminderDate.setHours(0, 0, 0, 0);
         var todayMidnight = new Date(now); todayMidnight.setHours(0, 0, 0, 0);
-        if (todayMidnight < reminderDate) continue; // reminder date hasn't arrived yet
-
-        // Reminder date has arrived or passed — but only fire at the configured time TODAY
-        var todayAtTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), rH, rM, 0, 0);
-        if (now < todayAtTime) continue; // configured time hasn't come yet today
+        if (todayMidnight < reminderDate) continue;
 
         var firedKey = 'camp-' + c.id;
         if (lastFiredKeys.has(firedKey)) continue;
 
-        // Fire notification (no Firestore-level dedup — re-fires after settings change)
         var dMs = endDate - now;
         var dHours = Math.floor(dMs / 3600000);
         var relText = dHours < 24 ? (dHours <= 1 ? 'in less than an hour' : 'in ' + dHours + ' hours') :
@@ -565,12 +590,14 @@
           brandId: c.brandId || null, brandName: c.brandName || '',
         });
         lastFiredKeys.add(firedKey);
+        firedAny = true;
         L('Campaign reminder fired: ' + c.promotionName);
       }
+      lastFiredKeys.add(dailyKey);
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // PERSONAL REMINDERS
+    // PERSONAL REMINDERS — always checks Firestore (user creates reminders there)
     // ══════════════════════════════════════════════════════════════════════
     async function checkPersonalReminders(uid, now) {
       var snap = await db.collection('reminders')
@@ -588,10 +615,7 @@
         var firedKey = 'reminder-' + doc.id;
         if (lastFiredKeys.has(firedKey)) continue;
 
-        // Mark as triggered
         await doc.ref.update({ triggered: true });
-
-        // Create a notification so user gets a desktop popup
         await db.collection('notifications').add({
           recipientId: uid, senderId: 'system', senderName: 'Reminder',
           category: 'reminder', action: 'due',
@@ -605,6 +629,130 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    // PRODUCT CAMPAIGN EXPIRY — local settings, Firestore at trigger time
+    // ══════════════════════════════════════════════════════════════════════
+    async function checkProductCampaigns(uid, now) {
+      var pcr = userSettings.productCampaignReminder || { enabled: true, leadDays: 2, time: '09:00', bossScope: 'mine' };
+      if (pcr.enabled === false) return;
+
+      var parts = (pcr.time || '09:00').split(':');
+      var todayAtTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(parts[0]) || 0, parseInt(parts[1]) || 0, 0, 0);
+      if (now < todayAtTime) return;
+
+      var leadDays = pcr.leadDays != null ? pcr.leadDays : 2;
+
+      // Check if already ran today
+      var dailyKey = 'prodcamp-check-' + now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+      if (lastFiredKeys.has(dailyKey)) return;
+
+      L('Product campaign check due — fetching from Firestore');
+
+      // Permission filtering
+      var allowedBrandIds = null;
+      if (currentRole === 'tl') {
+        var brandSnap = await db.collection('brands').get();
+        allowedBrandIds = new Set();
+        brandSnap.docs.forEach(function(d) { if (d.data().ownerId === uid) allowedBrandIds.add(d.id); });
+      } else if (currentRole === 'apc') {
+        var brandSnap2 = await db.collection('brands').get();
+        allowedBrandIds = new Set();
+        brandSnap2.docs.forEach(function(d) {
+          var assigned = (d.data().assignedUsers || []).some(function(u) { return u.id === uid; });
+          if (assigned) allowedBrandIds.add(d.id);
+        });
+      }
+
+      var pcSnap = await db.collection('productCampaigns').get();
+      L('ProductCampaign: found ' + pcSnap.docs.length + ' docs');
+
+      // First pass: collect all products with expiring promos
+      var allExpiring = []; // { productName, brandName, expiringPromos, currentFinal, priceAfterExpiry }
+      var todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+
+      for (var p = 0; p < pcSnap.docs.length; p++) {
+        var prodDoc = pcSnap.docs[p];
+        var product = prodDoc.data();
+
+        if (allowedBrandIds && !allowedBrandIds.has(product.brandId)) continue;
+
+        var promos = product.promotions || [];
+        var expiringPromos = [];
+
+        for (var pr = 0; pr < promos.length; pr++) {
+          var promo = promos[pr];
+          if (promo.status !== 'active' || !promo.endDate) continue;
+          var dateParts = promo.endDate.split('-');
+          var endMidnight = new Date(parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]), 0, 0, 0, 0);
+          var daysLeft = Math.round((endMidnight - todayMidnight) / 86400000);
+          if (daysLeft >= 0 && daysLeft <= leadDays) {
+            expiringPromos.push({ name: promo.name || promo.type || 'Promotion', discount: promo.discount || 0, daysLeft: daysLeft });
+          }
+        }
+
+        if (expiringPromos.length === 0) continue;
+
+        var retailPrice = product.retailPrice || 0;
+        var totalActiveDiscount = 0;
+        for (var rd = 0; rd < promos.length; rd++) {
+          if (promos[rd].status === 'active') totalActiveDiscount += (promos[rd].discount || 0);
+        }
+        var currentFinal = Math.max(0, retailPrice - totalActiveDiscount);
+        var expiringDiscount = 0;
+        for (var ed = 0; ed < expiringPromos.length; ed++) { expiringDiscount += expiringPromos[ed].discount; }
+
+        allExpiring.push({
+          productName: product.productName || 'Product',
+          brandName: product.brandName || '',
+          brandId: product.brandId || '',
+          expiringPromos: expiringPromos,
+          currentFinal: currentFinal,
+          priceAfterExpiry: currentFinal + expiringDiscount,
+          expiringDiscount: expiringDiscount,
+        });
+      }
+
+      if (allExpiring.length === 0) { lastFiredKeys.add(dailyKey); return; }
+
+      // One fired key for all product campaigns per day
+      var firedKey = 'prodcamp-all-' + now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+      if (lastFiredKeys.has(firedKey)) { lastFiredKeys.add(dailyKey); return; }
+
+      var title, body;
+
+      if (allExpiring.length === 1) {
+        // Single product — detailed notification
+        var item = allExpiring[0];
+        var promoNames = item.expiringPromos.map(function(ep) { return ep.name; }).join(', ');
+        var soonest = item.expiringPromos.reduce(function(min, ep) { return ep.daysLeft < min ? ep.daysLeft : min; }, Infinity);
+
+        if (item.expiringPromos.length === 1) {
+          title = item.productName + ' — ' + promoNames + (soonest === 0 ? ' expiring today' : ' ending in ' + soonest + ' day' + (soonest > 1 ? 's' : ''));
+        } else {
+          title = item.productName + ' — ' + item.expiringPromos.length + ' promotions' + (soonest === 0 ? ' expiring today' : ' ending soon');
+        }
+        body = promoNames + ' (−$' + item.expiringDiscount.toFixed(2) + ') ending soon. Price will increase from $' + item.currentFinal.toFixed(2) + ' to $' + item.priceAfterExpiry.toFixed(2) + '.';
+      } else {
+        // Multiple products — combined notification
+        var totalPromos = allExpiring.reduce(function(sum, item) { return sum + item.expiringPromos.length; }, 0);
+        title = totalPromos + ' promotion' + (totalPromos > 1 ? 's' : '') + ' ending soon across ' + allExpiring.length + ' products';
+        var details = allExpiring.map(function(item) {
+          return item.productName + ': $' + item.currentFinal.toFixed(2) + ' → $' + item.priceAfterExpiry.toFixed(2);
+        }).join(' | ');
+        body = details;
+      }
+
+      await db.collection('notifications').add({
+        recipientId: uid, senderId: 'system', senderName: 'Product Tracker',
+        category: 'product_campaign', action: 'expiring',
+        title: title, body: body,
+        read: false, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      lastFiredKeys.add(firedKey);
+      L('Product campaign notification: ' + allExpiring.length + ' products, ' + title);
+      lastFiredKeys.add(dailyKey);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     // HELPERS
     // ══════════════════════════════════════════════════════════════════════
     function pad2(n) { return n < 10 ? '0' + n : '' + n; }
@@ -613,7 +761,6 @@
       var parts = (sched.time || '00:00').split(':');
       var h = parseInt(parts[0]) || 0;
       var m = parseInt(parts[1]) || 0;
-
       if (category === 'daily') {
         var c = new Date(now); c.setHours(h, m, 0, 0);
         if (c > now) c.setDate(c.getDate() - 1);
@@ -640,7 +787,6 @@
       var parts = (sched.time || '00:00').split(':');
       var h = parseInt(parts[0]) || 0;
       var m = parseInt(parts[1]) || 0;
-
       if (category === 'daily') {
         var c = new Date(now); c.setHours(h, m, 0, 0);
         if (c <= now) c.setDate(c.getDate() + 1);
@@ -669,13 +815,10 @@
     // ── Cleanup ────────────────────────────────────────────────────────────
     function stopAll() {
       if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
-      if (unsubSettings) { unsubSettings(); unsubSettings = null; }
-      if (unsubTeamUsers) { unsubTeamUsers(); unsubTeamUsers = null; }
       if (schedulerInterval) { clearInterval(schedulerInterval); schedulerInterval = null; }
       Object.values(snoozedTimers).forEach(function(t) { clearTimeout(t); });
       snoozedTimers = {};
       lastFiredKeys.clear();
-      settingsLoaded = false;
     }
 
     // ── IPC handlers ───────────────────────────────────────────────────────

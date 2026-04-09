@@ -8,9 +8,9 @@ contextBridge.exposeInMainWorld('agent', {
     ipcRenderer.invoke('close-notification', id);
     ipcRenderer.invoke('snooze-notification', id, minutes);
   },
-  openWeb: (id) => {
+  openWeb: (id, category) => {
     ipcRenderer.invoke('mark-read', id);
-    ipcRenderer.invoke('open-web-app');
+    ipcRenderer.invoke('open-web-app', category);
     ipcRenderer.invoke('close-notification', id);
   },
 });
