@@ -258,6 +258,7 @@
       if (key === 'tierNotifications') clearKeysByPrefix('tier-');
       if (key === 'productCampaignReminder') clearKeysByPrefix('prodcamp-');
       if (key === 'resetSchedule') clearKeysByPrefix('reset-');
+      if (key === 'personalReminders') clearKeysByPrefix('reminder-');
 
       // Update in-memory settings
       userSettings[key] = data;
@@ -365,19 +366,24 @@
 
       L('Task reset due — fetching tasks from Firestore');
 
-      // NOW hit Firestore to get actual tasks
-      var brandSnap = await db.collection('brands').get();
-      var allTasks = [];
-      for (var i = 0; i < brandSnap.docs.length; i++) {
-        var bid = brandSnap.docs[i].id;
-        var tSnap = await db.collection('brands').doc(bid).collection('tasks').get();
-        tSnap.docs.forEach(function(d) { allTasks.push({ ref: d.ref, data: d.data() }); });
-      }
+      // Use collectionGroup to fetch only the current user's brand tasks in
+      // two queries (assignee + creator) instead of scanning every brand.
+      var cgAssigned = await db.collectionGroup('tasks').where('assigneeId', '==', uid).get().catch(function() { return { docs: [] }; });
+      var cgCreated  = await db.collectionGroup('tasks').where('createdBy', '==', uid).get().catch(function() { return { docs: [] }; });
       var gt1 = await db.collection('generalTasks').where('assigneeId', '==', uid).get().catch(function() { return { docs: [] }; });
       var gt2 = await db.collection('generalTasks').where('createdBy', '==', uid).get().catch(function() { return { docs: [] }; });
-      var seenG = {};
-      gt1.docs.forEach(function(d) { seenG[d.id] = true; allTasks.push({ ref: d.ref, data: d.data() }); });
-      gt2.docs.forEach(function(d) { if (!seenG[d.id]) allTasks.push({ ref: d.ref, data: d.data() }); });
+
+      var seen = {};
+      var allTasks = [];
+      function push(d) {
+        if (seen[d.ref.path]) return;
+        seen[d.ref.path] = true;
+        allTasks.push({ ref: d.ref, data: d.data() });
+      }
+      cgAssigned.docs.forEach(push);
+      cgCreated.docs.forEach(push);
+      gt1.docs.forEach(push);
+      gt2.docs.forEach(push);
 
       var resetCount = 0;
       for (var j = 0; j < allTasks.length; j++) {
@@ -500,12 +506,19 @@
     }
 
     async function loadTierBrands(uid) {
-      var snap = await db.collection('brands').get();
+      // Scope query to role: TL only needs their own brands
+      var ref = db.collection('brands');
+      var snap;
+      if (currentRole === 'tl' || currentRole === 'pctl') {
+        snap = await ref.where('ownerId', '==', uid).get();
+      } else {
+        snap = await ref.get();
+      }
       return snap.docs.map(function(d) { return Object.assign({ id: d.id }, d.data()); }).filter(function(b) {
         if (!b.tier || b.tier.toLowerCase() === 'unlimited') return false;
         if (currentRole === 'boss' || currentRole === 'ol') return true;
-        if (currentRole === 'tl') return b.ownerId === uid;
-        if (currentRole === 'apc') return (b.assignedUsers || []).some(function(u) { return u.id === uid; });
+        if (currentRole === 'tl' || currentRole === 'pctl') return true; // already filtered server-side
+        if (currentRole === 'apc' || currentRole === 'ipc') return (b.assignedUsers || []).some(function(u) { return u.id === uid; });
         return false;
       });
     }
@@ -597,34 +610,37 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // PERSONAL REMINDERS — always checks Firestore (user creates reminders there)
+    // PERSONAL REMINDERS — reads LOCAL list pushed by web app over WebSocket,
+    // hits Firestore ONLY when a reminder actually fires
     // ══════════════════════════════════════════════════════════════════════
     async function checkPersonalReminders(uid, now) {
-      var snap = await db.collection('reminders')
-        .where('userId', '==', uid)
-        .where('triggered', '==', false)
-        .get();
+      var list = userSettings.personalReminders;
+      if (!list || !list.length) return;
 
-      for (var i = 0; i < snap.docs.length; i++) {
-        var doc = snap.docs[i];
-        var data = doc.data();
-        if (!data.dueAt) continue;
-        var dueDate = data.dueAt.toDate ? data.dueAt.toDate() : new Date(data.dueAt);
-        if (now < dueDate) continue;
+      var nowMs = now.getTime();
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        if (!r || !r.id || r.dueAt == null) continue;
+        var dueMs = typeof r.dueAt === 'number' ? r.dueAt : new Date(r.dueAt).getTime();
+        if (isNaN(dueMs) || nowMs < dueMs) continue;
 
-        var firedKey = 'reminder-' + doc.id;
+        var firedKey = 'reminder-' + r.id;
         if (lastFiredKeys.has(firedKey)) continue;
 
-        await doc.ref.update({ triggered: true });
-        await db.collection('notifications').add({
-          recipientId: uid, senderId: 'system', senderName: 'Reminder',
-          category: 'reminder', action: 'due',
-          title: data.title || 'Reminder',
-          body: data.description || 'Your reminder is due.',
-          read: false, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        });
-        lastFiredKeys.add(firedKey);
-        L('Personal reminder fired: ' + (data.title || doc.id));
+        try {
+          await db.collection('reminders').doc(r.id).update({ triggered: true });
+          await db.collection('notifications').add({
+            recipientId: uid, senderId: 'system', senderName: 'Reminder',
+            category: 'reminder', action: 'due',
+            title: r.title || 'Reminder',
+            body:  r.notes || 'Your reminder is due.',
+            read: false, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          });
+          lastFiredKeys.add(firedKey);
+          L('Personal reminder fired: ' + (r.title || r.id));
+        } catch (e) {
+          L('Personal reminder fire error: ' + e.message);
+        }
       }
     }
 
@@ -647,13 +663,13 @@
 
       L('Product campaign check due — fetching from Firestore');
 
-      // Permission filtering
+      // Permission filtering — scope TL/PCTL query by ownerId to cut reads
       var allowedBrandIds = null;
-      if (currentRole === 'tl') {
-        var brandSnap = await db.collection('brands').get();
+      if (currentRole === 'tl' || currentRole === 'pctl') {
+        var brandSnap = await db.collection('brands').where('ownerId', '==', uid).get();
         allowedBrandIds = new Set();
-        brandSnap.docs.forEach(function(d) { if (d.data().ownerId === uid) allowedBrandIds.add(d.id); });
-      } else if (currentRole === 'apc') {
+        brandSnap.docs.forEach(function(d) { allowedBrandIds.add(d.id); });
+      } else if (currentRole === 'apc' || currentRole === 'ipc') {
         var brandSnap2 = await db.collection('brands').get();
         allowedBrandIds = new Set();
         brandSnap2.docs.forEach(function(d) {

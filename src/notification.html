@@ -170,13 +170,7 @@
 
     document.getElementById('btnOpen').addEventListener('click', function() {
       if (!notifData) return;
-      // Write goto command to Firestore — PWA picks it up in real-time
-      var uid = notifData.recipientId;
-      if (uid && notifData.category) {
-        db.collection('users').doc(uid).update({
-          goto: { category: notifData.category, ts: Date.now() }
-        }).catch(function() {});
-      }
+      // Send goto via WebSocket (no Firestore write needed)
       window.agent.openWeb(notifData.id, notifData.category);
     });
 

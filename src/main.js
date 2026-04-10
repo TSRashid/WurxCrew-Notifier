@@ -228,6 +228,11 @@ ipcMain.handle('auth-state-changed', (_, loggedIn) => {
 ipcMain.handle('hide-window', () => { log('hide-window called'); if (mainWindow) mainWindow.hide(); });
 ipcMain.handle('log-renderer', (_, msg) => { log(`[renderer] ${msg}`); });
 ipcMain.handle('open-web-app', (_, category) => {
+  // Send goto to web app via WebSocket
+  if (category) {
+    wsBroadcast({ type: 'goto', category });
+  }
+  // Fallback: open in browser if web app isn't connected via WebSocket
   shell.openExternal(WEB_APP_URL);
 });
 ipcMain.handle('update-tooltip', (_, count) => { if (tray) tray.setToolTip(`WurxOS Notifier — ${count} unread`); });
